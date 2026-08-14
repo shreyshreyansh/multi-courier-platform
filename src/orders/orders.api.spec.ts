@@ -116,7 +116,7 @@ describe("Orders HTTP API", () => {
     expect(body.error.requestId).toEqual(expect.any(String));
   });
 
-  it("retrieves a normalized pending state and cancels the accepted order", async () => {
+  it("retrieves a normalized dispatched state and cancels the accepted order", async () => {
     await request(httpServer)
       .post("/api/v1/orders")
       .send(validOrder)
@@ -131,11 +131,68 @@ describe("Orders HTTP API", () => {
 
     expect(tracked.body as unknown).toMatchObject({
       orderId: validOrder.orderId,
-      status: "PENDING",
+      status: "CREATED",
     });
     expect(cancelled.body as unknown).toMatchObject({
       orderId: validOrder.orderId,
       status: "CANCELLED",
     });
+  });
+
+  it("accepts a batch, reports item-level admission, and exposes a batch status resource", async () => {
+    const response = await request(httpServer)
+      .post("/api/v1/orders/bulk")
+      .send({
+        orders: [
+          validOrder,
+          {
+            ...validOrder,
+            orderId: "ORDER-API-BATCH-1002",
+            invoice: { ...validOrder.invoice, number: "INV-API-BATCH-1002" },
+          },
+        ],
+      })
+      .expect(202);
+
+    expect(response.body as unknown).toMatchObject({
+      status: "ACCEPTED",
+      totalCount: 2,
+      acceptedCount: 2,
+      failedCount: 0,
+    });
+
+    const batchId = (response.body as { readonly batchId: string }).batchId;
+    const batch = await request(httpServer)
+      .get("/api/v1/batches/" + batchId)
+      .expect(200);
+
+    expect(batch.body as unknown).toMatchObject({
+      batchId,
+      totalCount: 2,
+      items: [
+        { orderId: validOrder.orderId },
+        { orderId: "ORDER-API-BATCH-1002" },
+      ],
+    });
+  });
+
+  it("rejects a batch that exceeds the documented 100-order limit", async () => {
+    const orders = Array.from({ length: 101 }, (_, index) => ({
+      ...validOrder,
+      orderId: `ORDER-API-LIMIT-${String(index).padStart(3, "0")}`,
+      invoice: {
+        ...validOrder.invoice,
+        number: `INV-API-LIMIT-${String(index).padStart(3, "0")}`,
+      },
+    }));
+
+    const response = await request(httpServer)
+      .post("/api/v1/orders/bulk")
+      .send({ orders })
+      .expect(400);
+
+    expect((response.body as ErrorEnvelope).error.code).toBe(
+      "BATCH_VALIDATION_ERROR",
+    );
   });
 });

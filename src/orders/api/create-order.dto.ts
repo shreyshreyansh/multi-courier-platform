@@ -1,6 +1,9 @@
 import { Type } from "class-transformer";
 import {
+  ArrayMaxSize,
+  ArrayMinSize,
   IsIn,
+  IsArray,
   IsInt,
   IsISO4217CurrencyCode,
   IsNumber,
@@ -168,6 +171,21 @@ export class CreateOrderDto {
   @ValidateNested()
   @Type(() => InvoiceDto)
   public invoice!: InvoiceDto;
+}
+
+export class BulkCreateOrdersDto {
+  @ApiProperty({
+    type: () => CreateOrderDto,
+    isArray: true,
+    minItems: 1,
+    maxItems: 100,
+  })
+  @IsArray()
+  @ArrayMinSize(1)
+  @ArrayMaxSize(100)
+  @ValidateNested({ each: true })
+  @Type(() => CreateOrderDto)
+  public orders!: CreateOrderDto[];
 }
 
 export function toCreateOrderCommand(dto: CreateOrderDto): CreateOrderCommand {

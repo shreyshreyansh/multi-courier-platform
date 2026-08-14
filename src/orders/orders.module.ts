@@ -1,38 +1,31 @@
 import { Module } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
+import { PinoLogger } from "nestjs-pino";
 
 import { CourierAdapterRegistry } from "../couriers/courier-adapter.registry";
 import type { CourierAdapter } from "../couriers/courier-adapter";
 import { MockCourierAdapter } from "../couriers/mock-courier.adapter";
 import { UrbaneboltAdapter } from "../couriers/urbanebolt.adapter";
-import { OrdersController } from "./api/orders.controller";
+import { BatchesController, OrdersController } from "./api/orders.controller";
+import { BatchService } from "./application/batch.service";
 import {
   OrderService,
   type OrderDispatcher,
 } from "./application/order.service";
 import type { OrderRepository } from "./domain/order.repository";
 import { OrderFulfillmentService } from "./fulfillment/order-fulfillment.service";
+import { InProcessOrderDispatcher } from "./fulfillment/in-process-order.dispatcher";
 import { InMemoryOrderRepository } from "./infrastructure/in-memory-order.repository";
 
 export const ORDER_REPOSITORY = Symbol("ORDER_REPOSITORY");
 export const ORDER_DISPATCHER = Symbol("ORDER_DISPATCHER");
 
-class PendingOrderDispatcher implements OrderDispatcher {
-  public enqueueOrderDispatch(): Promise<void> {
-    return Promise.resolve();
-  }
-}
-
 @Module({
-  controllers: [OrdersController],
+  controllers: [OrdersController, BatchesController],
   providers: [
     {
       provide: ORDER_REPOSITORY,
       useFactory: () => new InMemoryOrderRepository(),
-    },
-    {
-      provide: ORDER_DISPATCHER,
-      useFactory: () => new PendingOrderDispatcher(),
     },
     {
       provide: CourierAdapterRegistry,
@@ -65,12 +58,25 @@ class PendingOrderDispatcher implements OrderDispatcher {
       inject: [ORDER_REPOSITORY, CourierAdapterRegistry],
     },
     {
+      provide: ORDER_DISPATCHER,
+      useFactory: (
+        fulfillment: OrderFulfillmentService,
+        logger: PinoLogger,
+      ): OrderDispatcher => new InProcessOrderDispatcher(fulfillment, logger),
+      inject: [OrderFulfillmentService, PinoLogger],
+    },
+    {
       provide: OrderService,
       useFactory: (
         orderRepository: OrderRepository,
         dispatcher: OrderDispatcher,
       ) => new OrderService(orderRepository, dispatcher),
       inject: [ORDER_REPOSITORY, ORDER_DISPATCHER],
+    },
+    {
+      provide: BatchService,
+      useFactory: (orders: OrderService) => new BatchService(orders),
+      inject: [OrderService],
     },
   ],
 })
