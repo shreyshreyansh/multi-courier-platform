@@ -4,7 +4,7 @@
 
 An API-first logistics integration service that gives internal order systems one stable shipment contract while keeping courier-specific protocols behind isolated adapters.
 
-This repository is a deliberate backend take-home submission. The implementation demonstrates a validated normalized API, deterministic idempotency, a working mock courier, an UrbaneBolt UAT adapter boundary, safe error handling, and a testable extension model. The repository also documents, explicitly, the remaining work needed to meet the assignment's durable database and asynchronous bulk-processing requirements. No claim is hidden behind a diagram.
+This repository is a deliberate backend take-home submission. The implementation demonstrates a validated normalized API, deterministic idempotency, asynchronous admission, a 1–100 order batch resource with item-level outcomes, a working mock courier, an UrbaneBolt UAT adapter boundary, safe error handling, and a testable extension model. No claim is hidden behind a diagram: local processing is intentionally process-local, while the production durability design is explicit and costed.
 
 ## Reviewer links
 
@@ -38,18 +38,20 @@ The controller and normalized order contract never import a provider-specific pa
 
 ## What is implemented today
 
-| Capability                                                                                 | Evidence                                                                                                                                   |
-| ------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------ |
-| Normalized create, track, cancel, and health endpoints                                     | [Orders controller](src/orders/api/orders.controller.ts), [Postman collection](postman/Multi%20Courier%20Platform.postman_collection.json) |
-| Strict nested request validation and rejection of unknown fields                           | [Create-order DTO](src/orders/api/create-order.dto.ts), [API tests](src/orders/orders.api.spec.ts)                                         |
-| Idempotent admission by order ID and canonical SHA-256 request fingerprint                 | [Order service](src/orders/application/order.service.ts), [fingerprint utility](src/orders/domain/request-fingerprint.ts)                  |
-| Courier-neutral port and registry                                                          | [Adapter contract](src/couriers/courier-adapter.ts), [registry](src/couriers/courier-adapter.registry.ts)                                  |
-| Deterministic local MockCourier                                                            | [Mock adapter](src/couriers/mock-courier.adapter.ts)                                                                                       |
-| UrbaneBolt UAT token, manifest, tracking, and cancellation mapping                         | [UrbaneBolt adapter](src/couriers/urbanebolt.adapter.ts), [contract test](src/couriers/urbanebolt.adapter.spec.ts)                         |
-| Consistent JSON errors, correlation IDs, security headers, and redacted structured logs    | [HTTP setup](src/app.setup.ts), [error filter](src/common/all-exceptions.filter.ts)                                                        |
-| CI quality gate for formatting, linting, compilation, tests, coverage, and container build | [GitHub Actions workflow](.github/workflows/ci.yml)                                                                                        |
+| Capability                                                                                 | Evidence                                                                                                                                      |
+| ------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| Normalized create, track, cancel, batch-status, and health endpoints                       | [Orders controller](src/orders/api/orders.controller.ts), [Postman collection](postman/Multi%20Courier%20Platform.postman_collection.json)    |
+| Strict nested request validation and rejection of unknown fields                           | [Create-order DTO](src/orders/api/create-order.dto.ts), [API tests](src/orders/orders.api.spec.ts)                                            |
+| Idempotent admission by order ID and canonical SHA-256 request fingerprint                 | [Order service](src/orders/application/order.service.ts), [fingerprint utility](src/orders/domain/request-fingerprint.ts)                     |
+| Courier-neutral port and registry                                                          | [Adapter contract](src/couriers/courier-adapter.ts), [registry](src/couriers/courier-adapter.registry.ts)                                     |
+| Deterministic local MockCourier                                                            | [Mock adapter](src/couriers/mock-courier.adapter.ts)                                                                                          |
+| UrbaneBolt UAT token, manifest, tracking, and cancellation mapping                         | [UrbaneBolt adapter](src/couriers/urbanebolt.adapter.ts), [contract test](src/couriers/urbanebolt.adapter.spec.ts)                            |
+| Consistent JSON errors, correlation IDs, security headers, and redacted structured logs    | [HTTP setup](src/app.setup.ts), [error filter](src/common/all-exceptions.filter.ts)                                                           |
+| Batch admission of 1–100 orders with partial-result visibility                             | [Batch service](src/orders/application/batch.service.ts), [HTTP tests](src/orders/orders.api.spec.ts)                                         |
+| In-process dispatch after HTTP admission                                                   | [Dispatcher](src/orders/fulfillment/in-process-order.dispatcher.ts), [unit tests](src/orders/fulfillment/in-process-order.dispatcher.spec.ts) |
+| CI quality gate for formatting, linting, compilation, tests, coverage, and container build | [GitHub Actions workflow](.github/workflows/ci.yml)                                                                                           |
 
-The [assignment coverage document](docs/ASSIGNMENT-COVERAGE.md) is intentionally candid about the current reference implementation: it is process-local and does not yet include durable PostgreSQL persistence, append-only tracking history, a worker/outbox, or the required bulk endpoint. Those are the next engineering slices, not features this README pretends are finished.
+The [assignment coverage document](docs/ASSIGNMENT-COVERAGE.md) is intentionally candid about the remaining production work: durable PostgreSQL persistence, append-only tracking history, a worker/outbox, retry policy, and reconciliation are not silently implied by the local mode. The batch endpoint is implemented and tested; its state is process-local until the durable repository/outbox slice lands.
 
 ## Five-minute reviewer tour
 
@@ -57,8 +59,9 @@ The [assignment coverage document](docs/ASSIGNMENT-COVERAGE.md) is intentionally
 2. Run the service in deterministic local mock mode using the quick start below.
 3. Import the [Postman collection](postman/Multi%20Courier%20Platform.postman_collection.json).
 4. Create, track, and cancel the supplied mock order.
-5. Re-submit the same create request to see a safe replay; change any payload field with the same order ID to see the idempotency conflict.
-6. Run the quality gate with **npm run verify**.
+5. Submit the supplied batch flow, then retrieve its batch-status resource.
+6. Re-submit the same create request to see a safe replay; change any payload field with the same order ID to see the idempotency conflict.
+7. Run the quality gate with **npm run verify**.
 
 ## Quick start
 
@@ -137,7 +140,7 @@ curl --request POST http://localhost:3000/api/v1/orders \
   }'
 ```
 
-The endpoint returns **202 Accepted** after local admission. In the current reference mode the dispatcher is deliberately non-durable and does not invoke a provider in the HTTP request; the admitted order therefore begins in **PENDING**. This preserves the controller-to-adapter boundary for testing while making the missing production dispatcher explicit.
+The endpoint returns **202 Accepted** after local admission. The response shows **PENDING** because no provider call is made in the request path. Immediately after the response is released, the in-process dispatcher runs the courier workflow; with MockCourier, a subsequent tracking request normally reads **CREATED**. This protects request latency but is not crash-safe or retry-capable—those guarantees require the documented transactional outbox and worker.
 
 ### Track and cancel
 
@@ -150,16 +153,32 @@ curl --request POST \
 
 Use the same order ID and exactly the same create payload to receive a safe replay. Reusing an existing order ID with changed content returns **409 IDEMPOTENCY_CONFLICT**.
 
+### Submit and inspect a batch
+
+The batch endpoint validates the wrapper, accepts **1–100** normalized orders, admits them concurrently, and returns item-level results. An individual idempotency conflict does not hide the status of the other items.
+
+```bash
+curl --request POST http://localhost:3000/api/v1/orders/bulk \
+  --header 'Content-Type: application/json' \
+  --data @examples/bulk-orders.json
+
+curl http://localhost:3000/api/v1/batches/<batchId>
+```
+
+The first response is **202 Accepted** and includes `batchId`, total, accepted, completed, and failed counts. Querying the status resource projects the latest local order states. A batch is intentionally not durable across a process restart yet; the response makes no contrary promise.
+
 ## API contract
 
 All routes are prefixed with **/api/v1**. The controller uses explicit Swagger annotations; the checked-in Postman collection is the executable API reference for this submission.
 
-| Method | Route                       | Success | Purpose                                                      |
-| ------ | --------------------------- | ------- | ------------------------------------------------------------ |
-| GET    | **/health/live**            | 200     | Process liveness probe.                                      |
-| POST   | **/orders**                 | 202     | Validate and idempotently admit a normalized shipment order. |
-| GET    | **/orders/:orderId/track**  | 200     | Retrieve normalized provider tracking state and events.      |
-| POST   | **/orders/:orderId/cancel** | 200     | Cancel an order when its lifecycle permits it.               |
+| Method | Route                       | Success | Purpose                                                                |
+| ------ | --------------------------- | ------- | ---------------------------------------------------------------------- |
+| GET    | **/health/live**            | 200     | Process liveness probe.                                                |
+| POST   | **/orders**                 | 202     | Validate and idempotently admit one normalized shipment order.         |
+| POST   | **/orders/bulk**            | 202     | Validate and admit 1–100 orders; preserve item-level partial outcomes. |
+| GET    | **/batches/:batchId**       | 200     | Read a batch admission summary and latest item lifecycle states.       |
+| GET    | **/orders/:orderId/track**  | 200     | Retrieve normalized provider tracking state and events.                |
+| POST   | **/orders/:orderId/cancel** | 200     | Cancel an order when its lifecycle permits it.                         |
 
 Every response carries an **x-request-id** header. Send a valid request ID yourself to preserve end-to-end correlation; otherwise the service creates one.
 
@@ -188,17 +207,17 @@ Copy the example only when you need to override defaults:
 cp .env.example .env
 ```
 
-| Variable            | Default                     | Used for                                                                                                  |
-| ------------------- | --------------------------- | --------------------------------------------------------------------------------------------------------- |
-| NODE_ENV            | development                 | Runtime mode validation.                                                                                  |
-| PORT                | 3000                        | HTTP listener.                                                                                            |
-| LOG_LEVEL           | info                        | Structured log level.                                                                                     |
-| REQUEST_TIMEOUT_MS  | 8000                        | Bounded UrbaneBolt request timeout.                                                                       |
-| URBANEBOLT_BASE_URL | https://uat.urbanebolt.in   | UrbaneBolt UAT base URL.                                                                                  |
-| URBANEBOLT_USERNAME | unset                       | Enables the UrbaneBolt adapter when paired with a password.                                               |
-| URBANEBOLT_PASSWORD | unset                       | Enables the UrbaneBolt adapter when paired with a username.                                               |
-| DATABASE_URL        | local PostgreSQL sample URL | Reserved for the next PostgreSQL repository slice; no connection is opened by the current reference mode. |
-| REDIS_URL           | local Redis sample URL      | Reserved for the next queue/outbox worker slice; no connection is opened by the current reference mode.   |
+| Variable            | Default                     | Used for                                                                            |
+| ------------------- | --------------------------- | ----------------------------------------------------------------------------------- |
+| NODE_ENV            | development                 | Runtime mode validation.                                                            |
+| PORT                | 3000                        | HTTP listener.                                                                      |
+| LOG_LEVEL           | info                        | Structured log level.                                                               |
+| REQUEST_TIMEOUT_MS  | 8000                        | Bounded UrbaneBolt request timeout.                                                 |
+| URBANEBOLT_BASE_URL | https://uat.urbanebolt.in   | UrbaneBolt UAT base URL.                                                            |
+| URBANEBOLT_USERNAME | unset                       | Enables the UrbaneBolt adapter when paired with a password.                         |
+| URBANEBOLT_PASSWORD | unset                       | Enables the UrbaneBolt adapter when paired with a username.                         |
+| DATABASE_URL        | local PostgreSQL sample URL | Validated configuration reserved for the durable repository/outbox deployment mode. |
+| REDIS_URL           | local Redis sample URL      | Validated configuration reserved for the durable worker deployment mode.            |
 
 Never commit real provider credentials. The logger redacts authorization headers, cookies, password fields, and API-key fields.
 
@@ -253,8 +272,10 @@ npm run verify
 This runs Prettier, ESLint with zero warnings, TypeScript compilation, Vitest, and V8 coverage thresholds. The suite covers:
 
 - admission, safe replay, and changed-payload conflicts;
+- one-to-one-hundred batch admission, partial item outcomes, batch lookup, and the hard size limit;
 - nested validation and unknown-field rejection;
 - normalized error envelopes and request-ID correlation;
+- deferred dispatch and safe failure logging outside the HTTP request;
 - mock courier create/track/cancel lifecycle behavior;
 - UrbaneBolt token, manifest, tracking, and cancellation mapping through a fake transport.
 
@@ -280,14 +301,15 @@ src/
   health/       Liveness surface
   orders/
     api/        Normalized DTOs, validation, and HTTP controller
-    application/ Idempotent admission use case
+    application/ Idempotent admission and batch-status use cases
     domain/     Order state, repository port, request fingerprint
-    fulfillment/ Provider-facing order lifecycle service
+    fulfillment/ Provider-facing lifecycle service and in-process dispatcher
     infrastructure/ Current in-memory repository
 docs/
   ASSIGNMENT-COVERAGE.md  Evidence matrix and known gaps
   VERIFICATION.md         Reproducible checks
 DESIGN.md                 Canonical architecture and trade-offs
+examples/                 Copy-pasteable normalized bulk request
 postman/                  Importable reviewer workflow
 ```
 
@@ -297,8 +319,8 @@ The next production slices are intentionally already constrained by the existing
 
 1. Replace the in-memory repository with PostgreSQL and persist provider request/response audit data.
 2. Add an append-only tracking-event table and idempotent event fingerprints.
-3. Replace the pending dispatcher with a transactional outbox and BullMQ/Redis worker.
-4. Add **POST /orders/bulk** with 1-100 atomic admissions, a batch resource, and per-item completion state.
+3. Replace the in-process dispatcher with a transactional outbox and BullMQ/Redis worker.
+4. Persist batch and batch-item records transactionally with durable per-item completion state.
 5. Add bounded exponential retry, authenticated retry after token invalidation, and reconciliation for ambiguous provider outcomes.
 
 The important boundary has already been proven: these changes belong behind the repository and dispatcher ports, so the consumer API and courier implementations do not need a redesign.

@@ -1,0 +1,76 @@
+{
+  "orders": [
+    {
+      "orderId": "ORDER-BULK-EXAMPLE-1001",
+      "courierPartner": "mock",
+      "serviceType": "FORWARD",
+      "paymentMode": "PREPAID",
+      "shipper": {
+        "name": "Acme Warehouse",
+        "phone": "+919900000001",
+        "addressLine1": "1 Market Street",
+        "city": "Bengaluru",
+        "state": "Karnataka",
+        "postalCode": "560001",
+        "country": "IN"
+      },
+      "consignee": {
+        "name": "Ada Lovelace",
+        "phone": "+919900000002",
+        "addressLine1": "42 Computing Lane",
+        "city": "Mumbai",
+        "state": "Maharashtra",
+        "postalCode": "400001",
+        "country": "IN"
+      },
+      "parcel": {
+        "weightGrams": 750,
+        "lengthCm": 20,
+        "widthCm": 15,
+        "heightCm": 10,
+        "description": "Books"
+      },
+      "invoice": {
+        "number": "INV-BULK-EXAMPLE-1001",
+        "amount": 1299,
+        "currency": "INR"
+      }
+    },
+    {
+      "orderId": "ORDER-BULK-EXAMPLE-1002",
+      "courierPartner": "mock",
+      "serviceType": "FORWARD",
+      "paymentMode": "PREPAID",
+      "shipper": {
+        "name": "Acme Warehouse",
+        "phone": "+919900000001",
+        "addressLine1": "1 Market Street",
+        "city": "Bengaluru",
+        "state": "Karnataka",
+        "postalCode": "560001",
+        "country": "IN"
+      },
+      "consignee": {
+        "name": "Grace Hopper",
+        "phone": "+919900000003",
+        "addressLine1": "77 Compiler Road",
+        "city": "Pune",
+        "state": "Maharashtra",
+        "postalCode": "411001",
+        "country": "IN"
+      },
+      "parcel": {
+        "weightGrams": 1200,
+        "lengthCm": 30,
+        "widthCm": 20,
+        "heightCm": 15,
+        "description": "Stationery"
+      },
+      "invoice": {
+        "number": "INV-BULK-EXAMPLE-1002",
+        "amount": 2499,
+        "currency": "INR"
+      }
+    }
+  ]
+}

@@ -8,13 +8,13 @@ The central design decision is to make provider behavior an edge concern. Contro
 
 ## Goals and non-goals
 
-| Goals                                      | Non-goals in the current reference implementation    |
-| ------------------------------------------ | ---------------------------------------------------- |
-| One stable API for all courier partners    | A customer-facing UI                                 |
-| New providers without route or DTO changes | A provider-specific API exposed to clients           |
-| Deterministic local development and CI     | Real UrbaneBolt credentials in source control or CI  |
-| Safe API admission and consistent errors   | Pretending that in-memory state is durable storage   |
-| A path to production-grade async dispatch  | Hiding the remaining database, worker, and bulk work |
+| Goals                                      | Non-goals in the current reference implementation          |
+| ------------------------------------------ | ---------------------------------------------------------- |
+| One stable API for all courier partners    | A customer-facing UI                                       |
+| New providers without route or DTO changes | A provider-specific API exposed to clients                 |
+| Deterministic local development and CI     | Real UrbaneBolt credentials in source control or CI        |
+| Safe API admission and consistent errors   | Pretending that in-memory state is durable storage         |
+| A path to production-grade async dispatch  | Hiding the remaining database, worker, and durability work |
 
 The [assignment coverage matrix](docs/ASSIGNMENT-COVERAGE.md) is the source of truth for implementation completeness.
 
@@ -24,6 +24,8 @@ The [assignment coverage matrix](docs/ASSIGNMENT-COVERAGE.md) is the source of t
 flowchart TB
     Consumer["Order management system"] --> Controller["OrdersController<br/>normalized HTTP API"]
     Controller --> Admission["OrderService<br/>idempotent admission"]
+    Controller --> Batch["BatchService<br/>1–100 item admission"]
+    Batch --> Admission
     Admission --> Repository["OrderRepository port"]
     Admission --> Dispatcher["OrderDispatcher port"]
     Dispatcher --> Lifecycle["OrderFulfillmentService"]
@@ -52,6 +54,7 @@ flowchart TB
 | OrdersController              | HTTP status, parameter extraction, normalized request/response translation | Provider payloads or provider-specific error parsing |
 | OrderService                  | Idempotent order admission and dispatch scheduling                         | Courier API calls                                    |
 | OrderRepository               | Admission uniqueness and state persistence                                 | HTTP or provider mapping                             |
+| BatchService                  | Batch summary, item-level admission outcomes, state projection             | Provider calls or a second order-validation contract |
 | OrderFulfillmentService       | Lifecycle orchestration: dispatch, track, cancel                           | Provider credential management                       |
 | CourierAdapterRegistry        | Selecting a configured adapter by partner                                  | Route selection or request validation                |
 | CourierAdapter implementation | Auth, provider mapping, bounded HTTP calls, status normalization           | Public API DTOs or another provider's logic          |
@@ -110,11 +113,36 @@ The fingerprint canonicalizes object keys and omits undefined optional values be
 
 The fulfilment service selects the adapter from the stored order's courier partner. Dispatch transitions PENDING to PROCESSING, calls the adapter, then persists the normalized provider shipment ID, AWB, and status. Tracking asks the same adapter for current state. Cancellation rejects delivered orders and is idempotent for already-cancelled ones.
 
-In the current reference implementation the dispatcher is intentionally a no-op and the repository is in-memory. The lifecycle service and ports are implemented and tested, but durable dispatch is a planned production slice rather than a completed claim.
+In the current reference implementation, the dispatcher schedules the lifecycle call after the HTTP request is admitted. It is intentionally in-process: it keeps courier latency out of the request path and logs a failure without producing an unhandled rejection. The repository and batch state are also in-memory. The lifecycle service and ports are implemented and tested, but restart-safe dispatch is a planned production slice rather than a completed claim.
+
+### Batch admission and state projection
+
+```mermaid
+sequenceDiagram
+    participant C as Consumer
+    participant A as API
+    participant B as BatchService
+    participant O as OrderService
+    participant D as In-process dispatcher
+
+    C->>A: POST /orders/bulk (1–100 orders)
+    A->>B: create(commands)
+    par each normalized command
+        B->>O: idempotent create(command)
+        O->>D: schedule dispatch after response
+    end
+    B-->>A: batch ID + item admission results
+    A-->>C: 202 Accepted
+    C->>A: GET /batches/:batchId
+    A->>B: project latest order states
+    B-->>C: summary + current item states
+```
+
+The batch endpoint intentionally returns admission state, not a fictional synchronous courier result. A same-ID/different-payload collision becomes an item-level `IDEMPOTENCY_CONFLICT`; unaffected orders remain visible. The local map retains the batch only for the lifetime of the process. In the durable mode, the same response contract is backed by batch, item, order, and outbox records in one transaction.
 
 ## Data model
 
-### Current implementation
+### Current local implementation
 
 The process-local repository stores:
 
@@ -124,7 +152,7 @@ The process-local repository stores:
 - normalized lifecycle state;
 - provider shipment ID, AWB, failure code/message, and timestamps.
 
-This is sufficient to demonstrate the domain boundary and deterministic behavior in a local process. It is not resilient across restarts or horizontal replicas.
+The batch service separately holds a batch UUID and its item-level admission outcome, then projects current order state on lookup. This is sufficient to demonstrate partial-result semantics and deterministic local behavior. Neither the orders nor batches survive a restart or coordinate across replicas.
 
 ### Production target
 
@@ -167,7 +195,7 @@ For the production dispatcher, the intended strategy is:
 | Authentication rejection                  | Invalidate cached token, re-authenticate once, retry the original operation once.                           |
 | Timeout after ambiguous create            | Do not create a second shipment unless provider idempotency is proven. Mark for reconciliation by order ID. |
 
-The current adapter provides timeout and safe provider error mapping. Durable retries, token-invalidating retry, attempt persistence, and reconciliation remain planned work and are not represented as complete.
+The current adapter provides timeout and safe provider error mapping. The local dispatcher logs a failed asynchronous dispatch and leaves the order marked `FAILED`; it intentionally does not retry. Durable retries, token-invalidating retry, attempt persistence, and reconciliation remain planned work and are not represented as complete.
 
 ## Security and operability
 
@@ -181,20 +209,20 @@ The current adapter provides timeout and safe provider error mapping. Durable re
 
 ## Key trade-offs
 
-| Decision                         | Benefit                                                    | Cost                                                    |
-| -------------------------------- | ---------------------------------------------------------- | ------------------------------------------------------- |
-| Normalized internal API          | Consumers and routes stay stable as providers change       | Adapter mapping work is required per provider.          |
-| Order-ID fingerprint idempotency | Prevents accidental duplicate shipment admission           | Requires clear client ownership of order IDs.           |
-| Async dispatcher boundary        | Keeps HTTP admission fast and prepares for bulk processing | Needs an outbox/worker implementation for durability.   |
-| Process-local mock default       | Fast, deterministic local review and CI                    | Not a substitute for a shared durable environment.      |
-| No live UAT test in CI           | Reproducible tests without secrets or provider flakiness   | UAT smoke tests must be opt-in and separately recorded. |
+| Decision                         | Benefit                                                   | Cost                                                        |
+| -------------------------------- | --------------------------------------------------------- | ----------------------------------------------------------- |
+| Normalized internal API          | Consumers and routes stay stable as providers change      | Adapter mapping work is required per provider.              |
+| Order-ID fingerprint idempotency | Prevents accidental duplicate shipment admission          | Requires clear client ownership of order IDs.               |
+| In-process async dispatcher      | Keeps HTTP admission fast and proves the handoff boundary | Loses work on crash; needs an outbox/worker for durability. |
+| Process-local mock/default store | Fast, deterministic local review and CI                   | Not a substitute for a shared durable environment.          |
+| No live UAT test in CI           | Reproducible tests without secrets or provider flakiness  | UAT smoke tests must be opt-in and separately recorded.     |
 
 ## Verification strategy
 
-Unit and HTTP-contract tests are designed around observable behavior: create/replay/conflict, invalid payload rejection, error shape, mock lifecycle, and UrbaneBolt mapping. The CI workflow runs formatting, linting, compilation, coverage, and a container build on pushes and pull requests.
+Unit and HTTP-contract tests are designed around observable behavior: create/replay/conflict, batch admission and partial outcomes, the 100-order limit, deferred dispatch, invalid payload rejection, error shape, mock lifecycle, and UrbaneBolt mapping. The CI workflow runs formatting, linting, compilation, coverage, and a container build on pushes and pull requests.
 
 See [docs/VERIFICATION.md](docs/VERIFICATION.md) for the latest recorded command result and [docs/ASSIGNMENT-COVERAGE.md](docs/ASSIGNMENT-COVERAGE.md) for the implementation status of each assignment requirement.
 
 ## Production completion path
 
-The clean next step is not to rewrite the controllers. It is to replace the existing repository and dispatch ports with PostgreSQL and an outbox-backed BullMQ worker, then add the batch resource over the same admission operation. The public API and the adapter contract remain stable while the system gains durability, retry, reconciliation, and 100-order bulk throughput.
+The clean next step is not to rewrite the controllers. It is to replace the existing process-local repository, batch map, and dispatcher with PostgreSQL records and an outbox-backed BullMQ worker. The public API and adapter contract remain stable while the system gains durability, retry, reconciliation, and restart-safe 100-order batch throughput.

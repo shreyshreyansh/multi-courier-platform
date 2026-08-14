@@ -12,6 +12,6 @@ HTTP API -> admission service -> repository / dispatcher ports
 - API consumers only use normalized order and error contracts.
 - Couriers implement the three-operation adapter contract: create, track, cancel.
 - Provider payloads, tokens, raw responses, and status vocabulary never belong in controllers or public DTOs.
-- The current process-local repository and no-op dispatcher are intentional local-reference seams. Production work replaces them with PostgreSQL, an outbox, and a worker without rewriting consumer routes.
+- The current process-local repository, batch map, and in-process dispatcher are intentional local-reference seams. The dispatcher executes courier work only after HTTP admission; production work replaces these with PostgreSQL, a transactional outbox, and a worker without rewriting consumer routes.
 
 For the exact implementation status against the assignment, see [ASSIGNMENT-COVERAGE.md](ASSIGNMENT-COVERAGE.md).

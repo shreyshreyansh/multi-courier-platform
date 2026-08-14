@@ -2,15 +2,15 @@
 
 ## Verdict: GREEN for the current reference implementation
 
-Verified on 2026-08-14. This result proves the checked-in implementation, documentation, and container path. It does **not** change the assignment-scope status: durable persistence, append-only tracking history, worker/outbox dispatch, retry/reconciliation, and bulk processing remain planned work. See [ASSIGNMENT-COVERAGE.md](ASSIGNMENT-COVERAGE.md).
+Verified on 2026-08-14. This result proves the checked-in implementation, documentation, and container path. It includes the 1–100 batch API and in-process asynchronous dispatch. It does **not** imply durable persistence, append-only tracking history, a worker/outbox, retry/reconciliation, or restart-safe batch state. See [ASSIGNMENT-COVERAGE.md](ASSIGNMENT-COVERAGE.md).
 
 | Check                         | Result | Evidence                                                                                          |
 | ----------------------------- | ------ | ------------------------------------------------------------------------------------------------- |
 | Formatting                    | Passed | Prettier checked the complete repository.                                                         |
 | Lint                          | Passed | ESLint completed with zero warnings.                                                              |
 | TypeScript build              | Passed | The NestJS application compiled successfully.                                                     |
-| Automated tests               | Passed | 6 test files, 13 tests.                                                                           |
-| Coverage                      | Passed | 86.89% statements/lines, 69.04% branches, 90% functions.                                          |
+| Automated tests               | Passed | 8 test files, 21 tests.                                                                           |
+| Coverage                      | Passed | 88.49% statements/lines, 74.17% branches, 90.69% functions.                                       |
 | Container build               | Passed | Docker image built as **multi-courier-platform:review**.                                          |
 | Container smoke               | Passed | Image started with production environment variables and **GET /api/v1/health/live** returned 200. |
 | Postman collection validation | Passed | Collection JSON parsed successfully after its reviewer-journey assertions were added.             |
@@ -37,12 +37,17 @@ The health smoke response had the expected shape:
 ## What the automated suite proves
 
 - idempotent create, safe replay, and conflicting reuse of an order ID;
+- batch admission, a batch-status resource, item-level partial outcome projection, and the 100-order limit;
 - strict nested validation and unknown-property rejection;
 - request-ID propagation and normalized HTTP error envelopes;
 - mock courier dispatch, tracking, cancellation, and unavailable-courier behavior;
 - UrbaneBolt token, manifest, tracking, cancellation, and status-mapping contract behavior through a fake transport;
 - environment handling for blank optional UAT credentials and incomplete credential pairs;
 - health service behavior.
+
+## Local-mode reliability boundary
+
+The dispatcher deliberately schedules provider work after the HTTP response. This gives the API an observable asynchronous boundary and prevents courier latency from holding the client connection open. It is not a durable queue: a process crash can lose admitted in-flight work, and dispatch failures are logged rather than retried. The next production slice is therefore a transactional outbox plus a retrying worker—not a claim that `setImmediate` is delivery infrastructure.
 
 ## Scope note
 

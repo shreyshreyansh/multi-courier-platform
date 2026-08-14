@@ -1,7 +1,7 @@
 {
   "info": {
     "name": "Multi-Courier Integration Platform - Reviewer Journey",
-    "description": "Import this collection after starting the NestJS service locally. Run requests top-to-bottom: it proves liveness, idempotent admission, replay safety, normalized tracking, cancellation, conflict handling, and strict validation. The default courier is MockCourier, so no external credentials are required.",
+    "description": "Import this collection after starting the NestJS service locally. Run requests top-to-bottom: it proves liveness, idempotent admission, replay safety, deferred MockCourier dispatch, tracking, cancellation, 1–100 batch admission, batch-status lookup, conflict handling, and strict validation. The default courier is MockCourier, so no external credentials are required.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
@@ -18,6 +18,11 @@
     {
       "key": "requestId",
       "value": "postman-review-1001",
+      "type": "string"
+    },
+    {
+      "key": "batchId",
+      "value": "",
       "type": "string"
     }
   ],
@@ -123,7 +128,7 @@
       "request": {
         "method": "GET",
         "url": "{{baseUrl}}/orders/{{orderId}}/track",
-        "description": "Returns the normalized tracking view. The expected state is PENDING until a dispatcher invokes provider dispatch."
+        "description": "Returns the normalized tracking view. The create response is PENDING, then the in-process MockCourier dispatch normally makes the next tracking view CREATED."
       },
       "event": [
         {
@@ -159,7 +164,63 @@
       ]
     },
     {
-      "name": "06 - Reject a changed payload with the same order ID",
+      "name": "06 - Submit a 2-order batch",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"orders\": [\n    {\n      \"orderId\": \"ORDER-POSTMAN-BATCH-1001\",\n      \"courierPartner\": \"mock\",\n      \"serviceType\": \"FORWARD\",\n      \"paymentMode\": \"PREPAID\",\n      \"shipper\": { \"name\": \"Acme Warehouse\", \"phone\": \"+919900000001\", \"addressLine1\": \"1 Market Street\", \"city\": \"Bengaluru\", \"state\": \"Karnataka\", \"postalCode\": \"560001\", \"country\": \"IN\" },\n      \"consignee\": { \"name\": \"Ada Lovelace\", \"phone\": \"+919900000002\", \"addressLine1\": \"42 Computing Lane\", \"city\": \"Mumbai\", \"state\": \"Maharashtra\", \"postalCode\": \"400001\", \"country\": \"IN\" },\n      \"parcel\": { \"weightGrams\": 750, \"lengthCm\": 20, \"widthCm\": 15, \"heightCm\": 10 },\n      \"invoice\": { \"number\": \"INV-POSTMAN-BATCH-1001\", \"amount\": 1299, \"currency\": \"INR\" }\n    },\n    {\n      \"orderId\": \"ORDER-POSTMAN-BATCH-1002\",\n      \"courierPartner\": \"mock\",\n      \"serviceType\": \"FORWARD\",\n      \"paymentMode\": \"PREPAID\",\n      \"shipper\": { \"name\": \"Acme Warehouse\", \"phone\": \"+919900000001\", \"addressLine1\": \"1 Market Street\", \"city\": \"Bengaluru\", \"state\": \"Karnataka\", \"postalCode\": \"560001\", \"country\": \"IN\" },\n      \"consignee\": { \"name\": \"Grace Hopper\", \"phone\": \"+919900000003\", \"addressLine1\": \"77 Compiler Road\", \"city\": \"Pune\", \"state\": \"Maharashtra\", \"postalCode\": \"411001\", \"country\": \"IN\" },\n      \"parcel\": { \"weightGrams\": 1200, \"lengthCm\": 30, \"widthCm\": 20, \"heightCm\": 15 },\n      \"invoice\": { \"number\": \"INV-POSTMAN-BATCH-1002\", \"amount\": 2499, \"currency\": \"INR\" }\n    }\n  ]\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": "{{baseUrl}}/orders/bulk",
+        "description": "Admits two orders concurrently. The API returns a batch resource immediately and continues courier dispatch after the HTTP response. Batch state is process-local in this reference mode."
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('batch returns 202', () => pm.response.to.have.status(202));",
+              "pm.test('both orders are accepted', () => pm.expect(pm.response.json().acceptedCount).to.eql(2));",
+              "pm.collectionVariables.set('batchId', pm.response.json().batchId);"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "07 - Inspect batch status",
+      "request": {
+        "method": "GET",
+        "url": "{{baseUrl}}/batches/{{batchId}}",
+        "description": "Projects current item lifecycle state and preserves any admission error at item granularity. Run request 06 first so its test script stores batchId."
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('batch lookup returns 200', () => pm.response.to.have.status(200));",
+              "pm.test('batch returns two item results', () => pm.expect(pm.response.json().items).to.have.length(2));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "08 - Reject a changed payload with the same order ID",
       "request": {
         "method": "POST",
         "header": [
@@ -194,7 +255,7 @@
       ]
     },
     {
-      "name": "07 - Reject an unknown request field",
+      "name": "09 - Reject an unknown request field",
       "request": {
         "method": "POST",
         "header": [
