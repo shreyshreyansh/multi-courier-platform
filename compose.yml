@@ -1,0 +1,44 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: courier
+      POSTGRES_PASSWORD: courier
+      POSTGRES_DB: courier_platform
+    healthcheck:
+      test:
+        ["CMD-SHELL", "pg_isready --username courier --dbname courier_platform"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    volumes:
+      - courier-postgres-data:/var/lib/postgresql/data
+
+  migrate:
+    build:
+      context: .
+      target: build
+    command: npm run prisma:migrate
+    environment:
+      DATABASE_URL: postgresql://courier:courier@postgres:5432/courier_platform?schema=public
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api:
+    build:
+      context: .
+    ports:
+      - "3000:3000"
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      PERSISTENCE_MODE: postgres
+      DATABASE_URL: postgresql://courier:courier@postgres:5432/courier_platform?schema=public
+      LOG_LEVEL: info
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+volumes:
+  courier-postgres-data:

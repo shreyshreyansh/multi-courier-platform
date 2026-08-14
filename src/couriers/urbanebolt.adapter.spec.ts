@@ -70,7 +70,11 @@ describe("UrbaneboltAdapter", () => {
         if (url.toString().includes("/tracking-pub/")) {
           return Promise.resolve(
             jsonResponse({
-              data: { status: "In Transit", location: "Mumbai Hub" },
+              data: {
+                status: "In Transit",
+                location: "Mumbai Hub",
+                message: "Delivery for Ada Lovelace is at Mumbai Hub.",
+              },
             }),
           );
         }
@@ -89,6 +93,8 @@ describe("UrbaneboltAdapter", () => {
       status: "CREATED",
     });
     expect(tracked).toMatchObject({ status: "IN_TRANSIT", awb: "UBE-1001" });
+    expect(tracked.events[0]?.message).toBe("Urbanebolt status: IN_TRANSIT.");
+    expect(JSON.stringify(tracked.events)).not.toContain("Ada Lovelace");
     expect(cancelled.status).toBe("CANCELLED");
     expect(requests).toHaveLength(4);
     expect(requests[1]?.url).toContain("/api/v1/services/manifest/");

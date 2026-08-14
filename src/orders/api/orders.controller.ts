@@ -22,6 +22,7 @@ import {
   type CreateOrderResult,
 } from "../application/order.service";
 import { BatchService, type BatchView } from "../application/batch.service";
+import type { CourierTrackingResult } from "../../couriers/courier-adapter";
 import { OrderFulfillmentService } from "../fulfillment/order-fulfillment.service";
 import {
   BulkCreateOrdersDto,
@@ -42,6 +43,19 @@ interface OrderResponse {
   readonly failure?: { readonly code?: string; readonly message?: string };
   readonly createdAt: string;
   readonly updatedAt: string;
+}
+
+interface TrackingResponse {
+  readonly orderId: string;
+  readonly status: string;
+  readonly awb?: string;
+  readonly providerShipmentId?: string;
+  readonly events: readonly {
+    readonly occurredAt: string;
+    readonly status: string;
+    readonly message: string;
+    readonly location?: string;
+  }[];
 }
 
 @ApiTags("orders")
@@ -96,8 +110,10 @@ export class OrdersController {
   @Get(":orderId/track")
   @ApiOperation({ summary: "Retrieve the latest normalized order status." })
   @ApiParam({ name: "orderId", example: "ORDER-1001" })
-  public track(@Param("orderId") orderId: string) {
-    return this.fulfillmentService.track(orderId);
+  public async track(
+    @Param("orderId") orderId: string,
+  ): Promise<TrackingResponse> {
+    return toTrackingResponse(await this.fulfillmentService.track(orderId));
   }
 
   @Post(":orderId/cancel")
@@ -155,5 +171,22 @@ function toOrderResponse(result: CreateOrderResult): OrderResponse {
         }),
     createdAt: order.createdAt.toISOString(),
     updatedAt: order.updatedAt.toISOString(),
+  };
+}
+
+function toTrackingResponse(tracking: CourierTrackingResult): TrackingResponse {
+  return {
+    orderId: tracking.orderId,
+    status: tracking.status,
+    ...(tracking.awb === undefined ? {} : { awb: tracking.awb }),
+    ...(tracking.providerShipmentId === undefined
+      ? {}
+      : { providerShipmentId: tracking.providerShipmentId }),
+    events: tracking.events.map((event) => ({
+      occurredAt: event.occurredAt,
+      status: event.status,
+      message: event.message,
+      ...(event.location === undefined ? {} : { location: event.location }),
+    })),
   };
 }

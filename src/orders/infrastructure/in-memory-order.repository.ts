@@ -1,13 +1,17 @@
 import { randomUUID } from "node:crypto";
 
 import type {
+  CourierAttemptInput,
   OrderAdmission,
   OrderRepository,
+  TrackingEventInput,
 } from "../domain/order.repository";
 import type { CreateOrderCommand, StoredOrder } from "../domain/order.types";
 
 export class InMemoryOrderRepository implements OrderRepository {
   private readonly orders = new Map<string, StoredOrder>();
+  private readonly attempts: CourierAttemptInput[] = [];
+  private readonly trackingEvents = new Map<string, TrackingEventInput>();
 
   public constructor(private readonly now: () => Date = () => new Date()) {}
 
@@ -50,5 +54,21 @@ export class InMemoryOrderRepository implements OrderRepository {
   public save(order: StoredOrder): Promise<StoredOrder> {
     this.orders.set(order.orderId, order);
     return Promise.resolve(order);
+  }
+
+  public recordAttempt(attempt: CourierAttemptInput): Promise<void> {
+    this.attempts.push(attempt);
+    return Promise.resolve();
+  }
+
+  public appendTrackingEvents(
+    orderId: string,
+    events: readonly TrackingEventInput[],
+  ): Promise<void> {
+    for (const event of events) {
+      this.trackingEvents.set(`${orderId}:${event.fingerprint}`, event);
+    }
+
+    return Promise.resolve();
   }
 }

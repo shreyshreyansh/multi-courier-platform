@@ -2,6 +2,10 @@ import { describe, expect, it } from "vitest";
 
 import { CourierAdapterRegistry } from "../../couriers/courier-adapter.registry";
 import { MockCourierAdapter } from "../../couriers/mock-courier.adapter";
+import type {
+  CourierAttemptInput,
+  TrackingEventInput,
+} from "../domain/order.repository";
 import { fingerprintOrderRequest } from "../domain/request-fingerprint";
 import type { CreateOrderCommand } from "../domain/order.types";
 import { InMemoryOrderRepository } from "../infrastructure/in-memory-order.repository";
@@ -77,4 +81,53 @@ describe("OrderFulfillmentService", () => {
       statusCode: 503,
     });
   });
+
+  it("records safe courier attempts and deduplicable tracking observations", async () => {
+    const repository = new RecordingAuditRepository();
+    await repository.admit(command, fingerprintOrderRequest(command));
+    const service = new OrderFulfillmentService(
+      repository,
+      new CourierAdapterRegistry([new MockCourierAdapter()]),
+    );
+
+    await service.dispatch(command.orderId);
+    await service.track(command.orderId);
+    await service.cancel(command.orderId);
+
+    expect(repository.recordedAttempts).toMatchObject([
+      { operation: "DISPATCH", outcome: "STARTED" },
+      {
+        operation: "DISPATCH",
+        outcome: "SUCCEEDED",
+        responseMetadata: { status: "CREATED" },
+      },
+      { operation: "TRACK", outcome: "STARTED" },
+      { operation: "TRACK", outcome: "SUCCEEDED" },
+      { operation: "CANCEL", outcome: "STARTED" },
+      { operation: "CANCEL", outcome: "SUCCEEDED" },
+    ]);
+    expect(repository.recordedTrackingEvents).toHaveLength(1);
+    expect(repository.recordedTrackingEvents[0]).toMatchObject({
+      status: "CREATED",
+      message: "Shipment created.",
+    });
+  });
 });
+
+class RecordingAuditRepository extends InMemoryOrderRepository {
+  public readonly recordedAttempts: CourierAttemptInput[] = [];
+  public readonly recordedTrackingEvents: TrackingEventInput[] = [];
+
+  public override recordAttempt(attempt: CourierAttemptInput): Promise<void> {
+    this.recordedAttempts.push(attempt);
+    return Promise.resolve();
+  }
+
+  public override appendTrackingEvents(
+    _orderId: string,
+    events: readonly TrackingEventInput[],
+  ): Promise<void> {
+    this.recordedTrackingEvents.push(...events);
+    return Promise.resolve();
+  }
+}

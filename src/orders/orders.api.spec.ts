@@ -133,6 +133,7 @@ describe("Orders HTTP API", () => {
       orderId: validOrder.orderId,
       status: "CREATED",
     });
+    expect(tracked.body as Record<string, unknown>).not.toHaveProperty("raw");
     expect(cancelled.body as unknown).toMatchObject({
       orderId: validOrder.orderId,
       status: "CANCELLED",

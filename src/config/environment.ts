@@ -20,6 +20,14 @@ const environmentSchema = z
       .min(100)
       .max(30_000)
       .default(8_000),
+    DISPATCH_MAX_ATTEMPTS: z.coerce.number().int().min(1).max(10).default(3),
+    DISPATCH_RETRY_BASE_DELAY_MS: z.coerce
+      .number()
+      .int()
+      .min(10)
+      .max(60_000)
+      .default(250),
+    PERSISTENCE_MODE: z.enum(["memory", "postgres"]).default("memory"),
     DATABASE_URL: z.string().url().optional(),
     REDIS_URL: z.string().url().optional(),
     URBANEBOLT_BASE_URL: z.string().url().default("https://uat.urbanebolt.in"),
@@ -36,6 +44,17 @@ const environmentSchema = z
         message:
           "URBANEBOLT_USERNAME and URBANEBOLT_PASSWORD must be set together",
         path: ["URBANEBOLT_USERNAME"],
+      });
+    }
+
+    if (
+      environment.PERSISTENCE_MODE === "postgres" &&
+      environment.DATABASE_URL === undefined
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "DATABASE_URL must be set when PERSISTENCE_MODE is postgres",
+        path: ["DATABASE_URL"],
       });
     }
   });

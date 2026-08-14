@@ -16,6 +16,11 @@ import type { OrderRepository } from "./domain/order.repository";
 import { OrderFulfillmentService } from "./fulfillment/order-fulfillment.service";
 import { InProcessOrderDispatcher } from "./fulfillment/in-process-order.dispatcher";
 import { InMemoryOrderRepository } from "./infrastructure/in-memory-order.repository";
+import {
+  adaptPrismaOrderClient,
+  PostgresOrderRepository,
+} from "./infrastructure/postgres-order.repository";
+import { PrismaService } from "./infrastructure/prisma.service";
 
 export const ORDER_REPOSITORY = Symbol("ORDER_REPOSITORY");
 export const ORDER_DISPATCHER = Symbol("ORDER_DISPATCHER");
@@ -23,9 +28,22 @@ export const ORDER_DISPATCHER = Symbol("ORDER_DISPATCHER");
 @Module({
   controllers: [OrdersController, BatchesController],
   providers: [
+    PrismaService,
     {
       provide: ORDER_REPOSITORY,
-      useFactory: () => new InMemoryOrderRepository(),
+      useFactory: (
+        config: ConfigService,
+        prisma: PrismaService,
+      ): OrderRepository => {
+        const persistenceMode = config.getOrThrow<"memory" | "postgres">(
+          "PERSISTENCE_MODE",
+        );
+
+        return persistenceMode === "postgres"
+          ? new PostgresOrderRepository(adaptPrismaOrderClient(prisma))
+          : new InMemoryOrderRepository();
+      },
+      inject: [ConfigService, PrismaService],
     },
     {
       provide: CourierAdapterRegistry,
@@ -62,8 +80,15 @@ export const ORDER_DISPATCHER = Symbol("ORDER_DISPATCHER");
       useFactory: (
         fulfillment: OrderFulfillmentService,
         logger: PinoLogger,
-      ): OrderDispatcher => new InProcessOrderDispatcher(fulfillment, logger),
-      inject: [OrderFulfillmentService, PinoLogger],
+        config: ConfigService,
+      ): OrderDispatcher =>
+        new InProcessOrderDispatcher(fulfillment, logger, undefined, {
+          maxAttempts: config.getOrThrow<number>("DISPATCH_MAX_ATTEMPTS"),
+          baseDelayMs: config.getOrThrow<number>(
+            "DISPATCH_RETRY_BASE_DELAY_MS",
+          ),
+        }),
+      inject: [OrderFulfillmentService, PinoLogger, ConfigService],
     },
     {
       provide: OrderService,

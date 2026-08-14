@@ -83,9 +83,7 @@ export class UrbaneboltAdapter implements CourierAdapter {
         {
           occurredAt: new Date().toISOString(),
           status,
-          message:
-            findString(tracking, ["message", "remark", "description"]) ??
-            `Urbanebolt status: ${status}.`,
+          message: `Urbanebolt status: ${status}.`,
           ...(location === undefined ? {} : { location }),
         },
       ],

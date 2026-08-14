@@ -1,0 +1,134 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum OrderStatus {
+  PENDING
+  PROCESSING
+  CREATED
+  PICKED_UP
+  IN_TRANSIT
+  DELIVERED
+  CANCELLED
+  FAILED
+  RECONCILIATION_REQUIRED
+}
+
+enum CourierOperation {
+  DISPATCH
+  TRACK
+  CANCEL
+}
+
+enum AttemptOutcome {
+  STARTED
+  SUCCEEDED
+  FAILED
+}
+
+enum BatchStatus {
+  ACCEPTED
+  COMPLETED
+  PARTIAL_FAILURE
+  FAILED
+}
+
+model Order {
+  id                 String           @id @default(uuid()) @db.Uuid
+  orderId            String           @unique @map("order_id")
+  courierPartner     String           @map("courier_partner")
+  serviceType        String           @map("service_type")
+  paymentMode        String           @map("payment_mode")
+  requestFingerprint String           @map("request_fingerprint")
+  command            Json
+  status             OrderStatus      @default(PENDING)
+  providerShipmentId String?          @map("provider_shipment_id")
+  awb                String?
+  failureCode        String?          @map("failure_code")
+  failureMessage     String?          @map("failure_message")
+  createdAt          DateTime         @default(now()) @map("created_at")
+  updatedAt          DateTime         @updatedAt @map("updated_at")
+  attempts           CourierAttempt[]
+  trackingEvents     TrackingEvent[]
+  batchItems         BatchItem[]
+  outboxEvents       OutboxEvent[]
+
+  @@index([courierPartner, status])
+  @@map("orders")
+}
+
+model CourierAttempt {
+  id               String           @id @default(uuid()) @db.Uuid
+  orderId          String           @map("order_id") @db.Uuid
+  operation        CourierOperation
+  outcome          AttemptOutcome
+  requestMetadata  Json?            @map("request_metadata")
+  responseMetadata Json?            @map("response_metadata")
+  errorCode        String?          @map("error_code")
+  errorMessage     String?          @map("error_message")
+  createdAt        DateTime         @default(now()) @map("created_at")
+  order            Order            @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([orderId, createdAt])
+  @@map("courier_attempts")
+}
+
+model TrackingEvent {
+  id          String      @id @default(uuid()) @db.Uuid
+  orderId     String      @map("order_id") @db.Uuid
+  fingerprint String
+  status      OrderStatus
+  occurredAt  DateTime    @map("occurred_at")
+  message     String
+  location    String?
+  createdAt   DateTime    @default(now()) @map("created_at")
+  order       Order       @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@unique([orderId, fingerprint])
+  @@index([orderId, occurredAt])
+  @@map("tracking_events")
+}
+
+model Batch {
+  id        String      @id @default(uuid()) @db.Uuid
+  status    BatchStatus @default(ACCEPTED)
+  createdAt DateTime    @default(now()) @map("created_at")
+  updatedAt DateTime    @updatedAt @map("updated_at")
+  items     BatchItem[]
+
+  @@map("batches")
+}
+
+model BatchItem {
+  id             String   @id @default(uuid()) @db.Uuid
+  batchId        String   @map("batch_id") @db.Uuid
+  orderId        String   @map("order_id") @db.Uuid
+  disposition    String?
+  admissionError Json?    @map("admission_error")
+  createdAt      DateTime @default(now()) @map("created_at")
+  batch          Batch    @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  order          Order    @relation(fields: [orderId], references: [id], onDelete: Restrict)
+
+  @@unique([batchId, orderId])
+  @@index([orderId])
+  @@map("batch_items")
+}
+
+model OutboxEvent {
+  id          String    @id @default(uuid()) @db.Uuid
+  orderId     String    @map("order_id") @db.Uuid
+  type        String
+  payload     Json
+  dedupeKey   String    @unique @map("dedupe_key")
+  publishedAt DateTime? @map("published_at")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  order       Order     @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([publishedAt, createdAt])
+  @@map("outbox_events")
+}
