@@ -1,7 +1,10 @@
 import { Module } from "@nestjs/common";
+import { ConfigService } from "@nestjs/config";
 
 import { CourierAdapterRegistry } from "../couriers/courier-adapter.registry";
+import type { CourierAdapter } from "../couriers/courier-adapter";
 import { MockCourierAdapter } from "../couriers/mock-courier.adapter";
+import { UrbaneboltAdapter } from "../couriers/urbanebolt.adapter";
 import { OrdersController } from "./api/orders.controller";
 import {
   OrderService,
@@ -33,7 +36,25 @@ class PendingOrderDispatcher implements OrderDispatcher {
     },
     {
       provide: CourierAdapterRegistry,
-      useFactory: () => new CourierAdapterRegistry([new MockCourierAdapter()]),
+      useFactory: (config: ConfigService) => {
+        const adapters: CourierAdapter[] = [new MockCourierAdapter()];
+        const username = config.get<string>("URBANEBOLT_USERNAME");
+        const password = config.get<string>("URBANEBOLT_PASSWORD");
+
+        if (username !== undefined && password !== undefined) {
+          adapters.push(
+            new UrbaneboltAdapter({
+              baseUrl: config.getOrThrow<string>("URBANEBOLT_BASE_URL"),
+              username,
+              password,
+              timeoutMs: config.getOrThrow<number>("REQUEST_TIMEOUT_MS"),
+            }),
+          );
+        }
+
+        return new CourierAdapterRegistry(adapters);
+      },
+      inject: [ConfigService],
     },
     {
       provide: OrderFulfillmentService,
