@@ -4,7 +4,7 @@
 
 An API-first logistics integration service that gives internal order systems one stable shipment contract while keeping courier-specific protocols behind isolated adapters.
 
-This repository is a deliberate backend take-home submission. The implementation demonstrates a validated normalized API, deterministic idempotency, asynchronous admission, a 1–100 order batch resource with item-level outcomes, a working mock courier, an UrbaneBolt UAT adapter boundary, safe error handling, and a testable extension model. No claim is hidden behind a diagram: local processing is intentionally process-local, while the production durability design is explicit and costed.
+This repository is a deliberate backend take-home submission. It demonstrates a validated normalized API, deterministic idempotency, asynchronous admission, a 1–100 order batch resource, a working mock courier, an UrbaneBolt UAT adapter boundary, safe error handling, and a testable extension model. It has two intentional operating modes: zero-dependency `memory` mode for fast review, and `postgres` mode for durable orders, sanitized courier attempts, and append-only tracking events.
 
 ## Reviewer links
 
@@ -25,7 +25,7 @@ This project makes that boundary explicit:
 flowchart LR
     Client["Internal consumer"] --> API["NestJS API<br/>validation + request ID"]
     API --> Admission["Order admission<br/>idempotency"]
-    Admission --> Store["Order repository port"]
+    Admission --> Store["Order repository port<br/>memory or PostgreSQL"]
     Admission --> Dispatch["Dispatch port"]
     Dispatch --> Fulfillment["Fulfilment service"]
     Fulfillment --> Registry["Courier adapter registry"]
@@ -48,15 +48,18 @@ The controller and normalized order contract never import a provider-specific pa
 | UrbaneBolt UAT token, manifest, tracking, and cancellation mapping                         | [UrbaneBolt adapter](src/couriers/urbanebolt.adapter.ts), [contract test](src/couriers/urbanebolt.adapter.spec.ts)                            |
 | Consistent JSON errors, correlation IDs, security headers, and redacted structured logs    | [HTTP setup](src/app.setup.ts), [error filter](src/common/all-exceptions.filter.ts)                                                           |
 | Batch admission of 1–100 orders with partial-result visibility                             | [Batch service](src/orders/application/batch.service.ts), [HTTP tests](src/orders/orders.api.spec.ts)                                         |
-| In-process dispatch after HTTP admission                                                   | [Dispatcher](src/orders/fulfillment/in-process-order.dispatcher.ts), [unit tests](src/orders/fulfillment/in-process-order.dispatcher.spec.ts) |
+| Durable PostgreSQL orders, idempotency, courier attempts, and tracking-event history       | [Prisma schema](prisma/schema.prisma), [PostgreSQL repository](src/orders/infrastructure/postgres-order.repository.ts)                        |
+| Audited courier lifecycle with normalized, provider-safe tracking responses                | [Fulfilment service](src/orders/fulfillment/order-fulfillment.service.ts), [API test](src/orders/orders.api.spec.ts)                          |
+| Bounded in-process retry after HTTP admission                                              | [Dispatcher](src/orders/fulfillment/in-process-order.dispatcher.ts), [unit tests](src/orders/fulfillment/in-process-order.dispatcher.spec.ts) |
+| Reproducible PostgreSQL migration and API topology                                         | [Compose file](compose.yml), [Dockerfile](Dockerfile)                                                                                         |
 | CI quality gate for formatting, linting, compilation, tests, coverage, and container build | [GitHub Actions workflow](.github/workflows/ci.yml)                                                                                           |
 
-The [assignment coverage document](docs/ASSIGNMENT-COVERAGE.md) is intentionally candid about the remaining production work: durable PostgreSQL persistence, append-only tracking history, a worker/outbox, retry policy, and reconciliation are not silently implied by the local mode. The batch endpoint is implemented and tested; its state is process-local until the durable repository/outbox slice lands.
+The [assignment coverage document](docs/ASSIGNMENT-COVERAGE.md) is intentionally candid about the remaining production work. PostgreSQL durability and bounded retry are implemented; a crash-safe outbox, durable batch state, and reconciliation worker are deliberately not claimed. The batch endpoint is implemented and tested, but its summary state remains process-local.
 
 ## Five-minute reviewer tour
 
 1. Read the [design document](DESIGN.md) for the component boundaries and decisions.
-2. Run the service in deterministic local mock mode using the quick start below.
+2. Run the service in deterministic local mock mode, then run the Compose path to inspect durable mode.
 3. Import the [Postman collection](postman/Multi%20Courier%20Platform.postman_collection.json).
 4. Create, track, and cancel the supplied mock order.
 5. Submit the supplied batch flow, then retrieve its batch-status resource.
@@ -95,6 +98,26 @@ Expected response:
   "timestamp": "2026-08-14T05:17:22.709Z"
 }
 ```
+
+### Run the durable PostgreSQL deployment
+
+The checked-in Compose topology starts PostgreSQL, waits for a health check, applies the Prisma migration as a one-shot job, then starts the API in `PERSISTENCE_MODE=postgres`.
+
+```bash
+docker compose up --build --detach
+curl --fail --silent http://localhost:3000/api/v1/health/live
+curl --request POST http://localhost:3000/api/v1/orders/bulk \
+  --header 'Content-Type: application/json' \
+  --data @examples/bulk-orders.json
+```
+
+Stop the stack when finished:
+
+```bash
+docker compose down
+```
+
+`docker compose down` preserves the named PostgreSQL volume. Add `--volumes` only when you intentionally want to remove the local review data.
 
 ### Submit a mock shipment
 
@@ -140,7 +163,7 @@ curl --request POST http://localhost:3000/api/v1/orders \
   }'
 ```
 
-The endpoint returns **202 Accepted** after local admission. The response shows **PENDING** because no provider call is made in the request path. Immediately after the response is released, the in-process dispatcher runs the courier workflow; with MockCourier, a subsequent tracking request normally reads **CREATED**. This protects request latency but is not crash-safe or retry-capable—those guarantees require the documented transactional outbox and worker.
+The endpoint returns **202 Accepted** after admission. The response shows **PENDING** because no provider call is made in the request path. Immediately after the response is released, the dispatcher runs the courier workflow; with MockCourier, a subsequent tracking request normally reads **CREATED**. Transient dispatch failures are retried with a bounded exponential delay (three attempts by default), and durable mode records each attempt. The scheduler is still in-process: a crash between admission and dispatch requires the next, explicitly documented transactional-outbox slice.
 
 ### Track and cancel
 
@@ -165,7 +188,7 @@ curl --request POST http://localhost:3000/api/v1/orders/bulk \
 curl http://localhost:3000/api/v1/batches/<batchId>
 ```
 
-The first response is **202 Accepted** and includes `batchId`, total, accepted, completed, and failed counts. Querying the status resource projects the latest local order states. A batch is intentionally not durable across a process restart yet; the response makes no contrary promise.
+The first response is **202 Accepted** and includes `batchId`, total, accepted, completed, and failed counts. Querying the status resource projects the latest in-process order states. In PostgreSQL mode, individual orders survive restart; the batch summary itself is intentionally not yet durable across a process restart.
 
 ## API contract
 
@@ -207,17 +230,20 @@ Copy the example only when you need to override defaults:
 cp .env.example .env
 ```
 
-| Variable            | Default                     | Used for                                                                            |
-| ------------------- | --------------------------- | ----------------------------------------------------------------------------------- |
-| NODE_ENV            | development                 | Runtime mode validation.                                                            |
-| PORT                | 3000                        | HTTP listener.                                                                      |
-| LOG_LEVEL           | info                        | Structured log level.                                                               |
-| REQUEST_TIMEOUT_MS  | 8000                        | Bounded UrbaneBolt request timeout.                                                 |
-| URBANEBOLT_BASE_URL | https://uat.urbanebolt.in   | UrbaneBolt UAT base URL.                                                            |
-| URBANEBOLT_USERNAME | unset                       | Enables the UrbaneBolt adapter when paired with a password.                         |
-| URBANEBOLT_PASSWORD | unset                       | Enables the UrbaneBolt adapter when paired with a username.                         |
-| DATABASE_URL        | local PostgreSQL sample URL | Validated configuration reserved for the durable repository/outbox deployment mode. |
-| REDIS_URL           | local Redis sample URL      | Validated configuration reserved for the durable worker deployment mode.            |
+| Variable                     | Default                     | Used for                                                                                 |
+| ---------------------------- | --------------------------- | ---------------------------------------------------------------------------------------- |
+| NODE_ENV                     | development                 | Runtime mode validation.                                                                 |
+| PORT                         | 3000                        | HTTP listener.                                                                           |
+| LOG_LEVEL                    | info                        | Structured log level.                                                                    |
+| REQUEST_TIMEOUT_MS           | 8000                        | Bounded UrbaneBolt request timeout.                                                      |
+| PERSISTENCE_MODE             | memory                      | Selects zero-dependency local storage or durable PostgreSQL storage.                     |
+| DATABASE_URL                 | local PostgreSQL sample URL | Required when `PERSISTENCE_MODE=postgres`; used by Prisma and Compose.                   |
+| DISPATCH_MAX_ATTEMPTS        | 3                           | Upper bound for in-process, retryable dispatch attempts.                                 |
+| DISPATCH_RETRY_BASE_DELAY_MS | 250                         | Base delay; later attempts double the delay.                                             |
+| URBANEBOLT_BASE_URL          | https://uat.urbanebolt.in   | UrbaneBolt UAT base URL.                                                                 |
+| URBANEBOLT_USERNAME          | unset                       | Enables the UrbaneBolt adapter when paired with a password.                              |
+| URBANEBOLT_PASSWORD          | unset                       | Enables the UrbaneBolt adapter when paired with a username.                              |
+| REDIS_URL                    | local Redis sample URL      | Reserved for the future durable worker/outbox deployment mode; unused by this API today. |
 
 Never commit real provider credentials. The logger redacts authorization headers, cookies, password fields, and API-key fields.
 
@@ -276,10 +302,13 @@ This runs Prettier, ESLint with zero warnings, TypeScript compilation, Vitest, a
 - nested validation and unknown-field rejection;
 - normalized error envelopes and request-ID correlation;
 - deferred dispatch and safe failure logging outside the HTTP request;
+- bounded retry/backoff for retryable dispatch failures;
+- PostgreSQL admission replay/conflict behavior, lifecycle audit rows, and tracking-event deduplication;
+- response mapping that prevents adapter-only raw fields reaching API consumers;
 - mock courier create/track/cancel lifecycle behavior;
 - UrbaneBolt token, manifest, tracking, and cancellation mapping through a fake transport.
 
-Build the production image without requiring a local Docker Compose stack:
+Build the memory-mode production image without requiring a local Docker Compose stack:
 
 ```bash
 docker build --tag multi-courier-platform:local .
@@ -304,7 +333,9 @@ src/
     application/ Idempotent admission and batch-status use cases
     domain/     Order state, repository port, request fingerprint
     fulfillment/ Provider-facing lifecycle service and in-process dispatcher
-    infrastructure/ Current in-memory repository
+    infrastructure/ In-memory and PostgreSQL repositories, Prisma lifecycle
+prisma/             Durable schema and deployable PostgreSQL migration
+compose.yml         PostgreSQL, migration, and API reviewer topology
 docs/
   ASSIGNMENT-COVERAGE.md  Evidence matrix and known gaps
   VERIFICATION.md         Reproducible checks
@@ -315,15 +346,14 @@ postman/                  Importable reviewer workflow
 
 ## Engineering roadmap
 
-The next production slices are intentionally already constrained by the existing ports:
+The next production slices are intentionally constrained by the existing ports:
 
-1. Replace the in-memory repository with PostgreSQL and persist provider request/response audit data.
-2. Add an append-only tracking-event table and idempotent event fingerprints.
-3. Replace the in-process dispatcher with a transactional outbox and BullMQ/Redis worker.
-4. Persist batch and batch-item records transactionally with durable per-item completion state.
-5. Add bounded exponential retry, authenticated retry after token invalidation, and reconciliation for ambiguous provider outcomes.
+1. Replace the in-process scheduler with a transactional outbox and BullMQ/Redis worker so post-admission dispatch survives crashes.
+2. Persist batch and batch-item records transactionally with durable per-item completion state.
+3. Add provider-aware retry classification, token-invalidating authentication retry, and reconciliation for ambiguous provider outcomes.
+4. Add an opt-in, secret-backed UAT smoke profile outside deterministic CI.
 
-The important boundary has already been proven: these changes belong behind the repository and dispatcher ports, so the consumer API and courier implementations do not need a redesign.
+The important boundary is proven: these changes belong behind repository and dispatcher ports, so consumers and existing courier implementations do not need a redesign.
 
 ## License
 

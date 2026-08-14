@@ -111,9 +111,9 @@ The fingerprint canonicalizes object keys and omits undefined optional values be
 
 ### Provider lifecycle
 
-The fulfilment service selects the adapter from the stored order's courier partner. Dispatch transitions PENDING to PROCESSING, calls the adapter, then persists the normalized provider shipment ID, AWB, and status. Tracking asks the same adapter for current state. Cancellation rejects delivered orders and is idempotent for already-cancelled ones.
+The fulfilment service selects the adapter from the stored order's courier partner. Dispatch transitions PENDING to PROCESSING, calls the adapter, then persists the normalized provider shipment ID, AWB, and status. Tracking asks the same adapter for current state, persists a fingerprint-deduplicated normalized event history, and returns an API-owned response shape. Cancellation rejects delivered orders and is idempotent for already-cancelled ones.
 
-In the current reference implementation, the dispatcher schedules the lifecycle call after the HTTP request is admitted. It is intentionally in-process: it keeps courier latency out of the request path and logs a failure without producing an unhandled rejection. The repository and batch state are also in-memory. The lifecycle service and ports are implemented and tested, but restart-safe dispatch is a planned production slice rather than a completed claim.
+The dispatcher schedules the lifecycle call after the HTTP request is admitted. It is intentionally in-process: it keeps courier latency out of the request path, retries retryable dispatch errors with bounded exponential backoff, and logs a terminal failure without producing an unhandled rejection. `memory` is the zero-dependency local default. `postgres` persists orders, lifecycle attempts, and tracking events through the same repository port. Neither mode makes the dispatch handoff crash-safe; that is the explicit transactional-outbox boundary.
 
 ### Batch admission and state projection
 
@@ -138,13 +138,13 @@ sequenceDiagram
     B-->>C: summary + current item states
 ```
 
-The batch endpoint intentionally returns admission state, not a fictional synchronous courier result. A same-ID/different-payload collision becomes an item-level `IDEMPOTENCY_CONFLICT`; unaffected orders remain visible. The local map retains the batch only for the lifetime of the process. In the durable mode, the same response contract is backed by batch, item, order, and outbox records in one transaction.
+The batch endpoint intentionally returns admission state, not a fictional synchronous courier result. A same-ID/different-payload collision becomes an item-level `IDEMPOTENCY_CONFLICT`; unaffected orders remain visible. The local map retains the batch only for the lifetime of the process. In PostgreSQL mode, individual order state is durable but the current batch projection is not yet persisted; the response contract makes no restart-safe batch promise.
 
 ## Data model
 
-### Current local implementation
+### Operating modes
 
-The process-local repository stores:
+The default `memory` repository stores:
 
 - internal UUID and external order ID;
 - selected courier partner, service type, and payment mode;
@@ -152,20 +152,22 @@ The process-local repository stores:
 - normalized lifecycle state;
 - provider shipment ID, AWB, failure code/message, and timestamps.
 
-The batch service separately holds a batch UUID and its item-level admission outcome, then projects current order state on lookup. This is sufficient to demonstrate partial-result semantics and deterministic local behavior. Neither the orders nor batches survive a restart or coordinate across replicas.
+The batch service separately holds a batch UUID and its item-level admission outcome, then projects current order state on lookup. This is sufficient to demonstrate partial-result semantics and deterministic local behavior. Neither orders nor batches survive a restart in this mode.
 
-### Production target
+`PERSISTENCE_MODE=postgres` selects `PostgresOrderRepository`. It stores the same canonical order projection across API restarts and adds append-only, sanitized courier-attempt and tracking-event rows. A unique `orders.order_id` constraint and a unique `(tracking_events.order_id, fingerprint)` constraint enforce the two critical write invariants at the database boundary.
 
-The production repository should use PostgreSQL with the following tables:
+### PostgreSQL schema and planned tables
 
-| Table            | Key fields and indexes                                           | Purpose                                                       |
-| ---------------- | ---------------------------------------------------------------- | ------------------------------------------------------------- |
-| orders           | unique order_id; request_fingerprint; partner/status index       | Canonical order state and idempotent admission.               |
-| courier_attempts | order_id, operation, created_at; sanitized request/response JSON | Provider audit trail, errors, and reconciliation evidence.    |
-| tracking_events  | unique order_id plus payload fingerprint; chronological index    | Append-only provider observations.                            |
-| batches          | batch_id and summary counters                                    | Asynchronous bulk-work admission and status.                  |
-| batch_items      | unique batch_id plus order_id                                    | Per-order progress, normalized failures, and partial success. |
-| outbox_events    | unpublished-event index and deterministic aggregate key          | Reliable handoff from database transaction to worker queue.   |
+The deployed Prisma migration creates the following schema. The runtime-use column prevents the schema from being mistaken for a completed worker implementation.
+
+| Table            | Key fields and indexes                                        | Runtime use today                                                 |
+| ---------------- | ------------------------------------------------------------- | ----------------------------------------------------------------- |
+| orders           | unique order_id; request_fingerprint; partner/status index    | Canonical durable order projection and idempotent admission.      |
+| courier_attempts | order_id, operation, created_at; sanitized scalar metadata    | Append-only lifecycle audit for dispatch, track, and cancel.      |
+| tracking_events  | unique order_id plus payload fingerprint; chronological index | Append-only normalized observations, deduplicated on polling.     |
+| batches          | batch_id and summary counters                                 | Schema provision only; current batch service is process-local.    |
+| batch_items      | unique batch_id plus order_id                                 | Schema provision only; written by the future durable batch slice. |
+| outbox_events    | unpublished-event index and deterministic aggregate key       | Schema provision only; no worker or publisher claims yet.         |
 
 The orders table owns the latest projection. Tracking events are append-only because the latest provider status alone is not enough to debug a disputed delivery.
 
@@ -184,18 +186,19 @@ It sends a bounded request with an AbortController timeout, never exposes raw pr
 
 The API emits a single error envelope with code, safe message, request ID, and optional field-level details. Validation failures and idempotency conflicts are distinct from provider failures. This keeps consumers independent of a courier's raw response wording.
 
-For the production dispatcher, the intended strategy is:
+The implemented in-process retry policy and the remaining production policy are distinct:
 
-| Failure class                             | Action                                                                                                      |
-| ----------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
-| Consumer validation                       | Reject synchronously with 400 and actionable field details.                                                 |
-| Unsupported or disabled courier           | Reject with a normalized client-facing code and configured partners.                                        |
-| Courier 4xx                               | Persist sanitized attempt; do not retry blindly; return a normalized provider-validation or rejection code. |
-| Timeout, network failure, or provider 5xx | Retry asynchronously with bounded exponential backoff and jitter. Persist final failure for reconciliation. |
-| Authentication rejection                  | Invalidate cached token, re-authenticate once, retry the original operation once.                           |
-| Timeout after ambiguous create            | Do not create a second shipment unless provider idempotency is proven. Mark for reconciliation by order ID. |
+| Failure class                             | Action                                                                                                                                                           |
+| ----------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Consumer validation                       | Reject synchronously with 400 and actionable field details.                                                                                                      |
+| Unsupported or disabled courier           | Reject with a normalized client-facing code and configured partners.                                                                                             |
+| Courier 4xx                               | Persist sanitized attempt; do not retry blindly; return a normalized provider-validation or rejection code.                                                      |
+| Retryable dispatch failure                | Retry in-process up to `DISPATCH_MAX_ATTEMPTS` with deterministic exponential delay from `DISPATCH_RETRY_BASE_DELAY_MS`; record each attempt in PostgreSQL mode. |
+| Timeout, network failure, or provider 5xx | The durable worker will use bounded backoff with jitter, retry state, and a dead-letter/reconciliation path.                                                     |
+| Authentication rejection                  | Invalidate cached token, re-authenticate once, retry the original operation once.                                                                                |
+| Timeout after ambiguous create            | Do not create a second shipment unless provider idempotency is proven. Mark for reconciliation by order ID.                                                      |
 
-The current adapter provides timeout and safe provider error mapping. The local dispatcher logs a failed asynchronous dispatch and leaves the order marked `FAILED`; it intentionally does not retry. Durable retries, token-invalidating retry, attempt persistence, and reconciliation remain planned work and are not represented as complete.
+The current adapter provides a timeout and safe provider error mapping. The dispatcher retries only transient-looking dispatch failures; unsupported-adapter and client-side application errors do not loop. It is not a queue: a process crash can still lose scheduled work, and token-refresh retry, jitter, dead lettering, and reconciliation remain planned rather than implied.
 
 ## Security and operability
 
@@ -205,24 +208,25 @@ The current adapter provides timeout and safe provider error mapping. The local 
 - **Correlation:** valid caller-provided **x-request-id** values are propagated; otherwise a UUID is created and returned.
 - **Log redaction:** authorization, cookies, password, and API-key paths are censored in structured logs.
 - **Secret handling:** UrbaneBolt credentials are environment-only and never appear in source, tests, or Postman examples.
-- **Failure safety:** raw provider bodies and stack traces are kept out of client responses.
+- **Failure safety:** raw provider bodies and stack traces are kept out of client responses; the controller maps tracking to an API-owned safe shape.
+- **Audit minimization:** durable attempt metadata is an allow-list of operational scalars; raw request/response bodies and address PII are not stored as audit metadata.
 
 ## Key trade-offs
 
-| Decision                         | Benefit                                                   | Cost                                                        |
-| -------------------------------- | --------------------------------------------------------- | ----------------------------------------------------------- |
-| Normalized internal API          | Consumers and routes stay stable as providers change      | Adapter mapping work is required per provider.              |
-| Order-ID fingerprint idempotency | Prevents accidental duplicate shipment admission          | Requires clear client ownership of order IDs.               |
-| In-process async dispatcher      | Keeps HTTP admission fast and proves the handoff boundary | Loses work on crash; needs an outbox/worker for durability. |
-| Process-local mock/default store | Fast, deterministic local review and CI                   | Not a substitute for a shared durable environment.          |
-| No live UAT test in CI           | Reproducible tests without secrets or provider flakiness  | UAT smoke tests must be opt-in and separately recorded.     |
+| Decision                         | Benefit                                                    | Cost                                                        |
+| -------------------------------- | ---------------------------------------------------------- | ----------------------------------------------------------- |
+| Normalized internal API          | Consumers and routes stay stable as providers change       | Adapter mapping work is required per provider.              |
+| Order-ID fingerprint idempotency | Prevents accidental duplicate shipment admission           | Requires clear client ownership of order IDs.               |
+| In-process async dispatcher      | Keeps HTTP admission fast and adds bounded transient retry | Loses work on crash; needs an outbox/worker for durability. |
+| Memory default + PostgreSQL mode | Fast deterministic review plus durable order/audit history | Batch state and dispatch handoff are still not durable.     |
+| No live UAT test in CI           | Reproducible tests without secrets or provider flakiness   | UAT smoke tests must be opt-in and separately recorded.     |
 
 ## Verification strategy
 
-Unit and HTTP-contract tests are designed around observable behavior: create/replay/conflict, batch admission and partial outcomes, the 100-order limit, deferred dispatch, invalid payload rejection, error shape, mock lifecycle, and UrbaneBolt mapping. The CI workflow runs formatting, linting, compilation, coverage, and a container build on pushes and pull requests.
+Unit and HTTP-contract tests are designed around observable behavior: create/replay/conflict, PostgreSQL unique-key recovery, audit/event persistence, tracking-response containment, batch admission and partial outcomes, the 100-order limit, bounded retry, invalid payload rejection, error shape, mock lifecycle, and UrbaneBolt mapping. The CI workflow runs formatting, linting, compilation, coverage, and a container build on pushes and pull requests. A disposable Compose proof exercises migration, API health, bulk admission, and restart-safe PostgreSQL replay.
 
 See [docs/VERIFICATION.md](docs/VERIFICATION.md) for the latest recorded command result and [docs/ASSIGNMENT-COVERAGE.md](docs/ASSIGNMENT-COVERAGE.md) for the implementation status of each assignment requirement.
 
 ## Production completion path
 
-The clean next step is not to rewrite the controllers. It is to replace the existing process-local repository, batch map, and dispatcher with PostgreSQL records and an outbox-backed BullMQ worker. The public API and adapter contract remain stable while the system gains durability, retry, reconciliation, and restart-safe 100-order batch throughput.
+The clean next step is not to rewrite controllers. It is to make the existing `outbox_events`, `batches`, and `batch_items` schema provisions live behind the dispatcher and batch ports: atomic order-plus-outbox admission, an idempotent BullMQ worker, durable batch projections, and reconciliation for ambiguous provider outcomes. The public API and adapter contract stay stable while delivery becomes crash-safe.
