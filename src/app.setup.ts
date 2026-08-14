@@ -9,7 +9,6 @@ export const API_PREFIX = "api/v1";
 export function configureHttpApplication(app: INestApplication): void {
   app.use(helmet());
   app.use(requestContextMiddleware);
-  app.enableCors({ origin: false });
   app.setGlobalPrefix(API_PREFIX);
   app.useGlobalPipes(
     new ValidationPipe({

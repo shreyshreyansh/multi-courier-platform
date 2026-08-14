@@ -1,18 +1,17 @@
-# Architecture notes
+# Architecture Notes
 
-## Request path
+The canonical reviewer-facing design document is [DESIGN.md](../DESIGN.md).
 
-`HTTP DTO + validation pipe → OrderService admission → OrderRepository / dispatch port → OrderFulfillmentService → CourierAdapter`.
+This supporting note records the design boundary that must remain stable as the platform evolves:
 
-The boundary is deliberately small: providers implement `create`, `track`, and `cancel`; only normalized domain types reach controllers. Adding a provider is a new adapter plus registry registration, not an API rewrite.
+```text
+HTTP API -> admission service -> repository / dispatcher ports
+                                  -> fulfilment service -> courier adapter registry -> adapter
+```
 
-## Reliability choices
+- API consumers only use normalized order and error contracts.
+- Couriers implement the three-operation adapter contract: create, track, cancel.
+- Provider payloads, tokens, raw responses, and status vocabulary never belong in controllers or public DTOs.
+- The current process-local repository and no-op dispatcher are intentional local-reference seams. Production work replaces them with PostgreSQL, an outbox, and a worker without rewriting consumer routes.
 
-- A canonical SHA-256 fingerprint makes an identical `orderId` request a safe replay and a changed payload a `409 IDEMPOTENCY_CONFLICT`.
-- The API rejects unknown fields instead of silently ignoring ambiguous input.
-- The request-context middleware emits/accepts `x-request-id`; structured Pino logs redact authorization, cookies, passwords, and API keys.
-- Provider calls use a bounded `AbortController` timeout and surface safe provider errors.
-
-## Production evolution
-
-The submitted local mode is intentionally dependency-free and uses the deterministic mock adapter. For a production deployment, replace `InMemoryOrderRepository` and `PendingOrderDispatcher` with the already-defined `OrderRepository` / `OrderDispatcher` ports backed by PostgreSQL, a transactional outbox, and BullMQ/Redis. That preserves the public API and adapter contracts while adding durable retries, batch processing, and reconciliation.
+For the exact implementation status against the assignment, see [ASSIGNMENT-COVERAGE.md](ASSIGNMENT-COVERAGE.md).

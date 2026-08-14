@@ -1,39 +1,232 @@
 {
   "info": {
-    "name": "Multi Courier Platform",
+    "name": "Multi-Courier Integration Platform - Reviewer Journey",
+    "description": "Import this collection after starting the NestJS service locally. Run requests top-to-bottom: it proves liveness, idempotent admission, replay safety, normalized tracking, cancellation, conflict handling, and strict validation. The default courier is MockCourier, so no external credentials are required.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
-  "variable": [{ "key": "baseUrl", "value": "http://localhost:3000/api/v1" }],
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:3000/api/v1",
+      "type": "string"
+    },
+    {
+      "key": "orderId",
+      "value": "ORDER-POSTMAN-1001",
+      "type": "string"
+    },
+    {
+      "key": "requestId",
+      "value": "postman-review-1001",
+      "type": "string"
+    }
+  ],
   "item": [
     {
-      "name": "Health",
-      "request": { "method": "GET", "url": "{{baseUrl}}/health/live" }
-    },
-    {
-      "name": "Create mock order",
-      "request": {
-        "method": "POST",
-        "header": [{ "key": "Content-Type", "value": "application/json" }],
-        "body": {
-          "mode": "raw",
-          "raw": "{\n  \"orderId\": \"ORDER-POSTMAN-1001\",\n  \"courierPartner\": \"mock\",\n  \"serviceType\": \"FORWARD\",\n  \"paymentMode\": \"PREPAID\",\n  \"shipper\": { \"name\": \"Acme Warehouse\", \"phone\": \"+919900000001\", \"addressLine1\": \"1 Market Street\", \"city\": \"Bengaluru\", \"state\": \"Karnataka\", \"postalCode\": \"560001\", \"country\": \"IN\" },\n  \"consignee\": { \"name\": \"Ada Lovelace\", \"phone\": \"+919900000002\", \"addressLine1\": \"42 Computing Lane\", \"city\": \"Mumbai\", \"state\": \"Maharashtra\", \"postalCode\": \"400001\", \"country\": \"IN\" },\n  \"parcel\": { \"weightGrams\": 750, \"lengthCm\": 20, \"widthCm\": 15, \"heightCm\": 10 },\n  \"invoice\": { \"number\": \"INV-1001\", \"amount\": 1299, \"currency\": \"INR\" }\n}"
-        },
-        "url": "{{baseUrl}}/orders"
-      }
-    },
-    {
-      "name": "Track order",
+      "name": "01 - Health",
       "request": {
         "method": "GET",
-        "url": "{{baseUrl}}/orders/ORDER-POSTMAN-1001/track"
-      }
+        "url": "{{baseUrl}}/health/live",
+        "description": "Confirms that the service is listening before exercising order flows."
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('liveness returns 200', () => pm.response.to.have.status(200));",
+              "pm.test('service reports ok', () => pm.expect(pm.response.json().status).to.eql('ok'));"
+            ]
+          }
+        }
+      ]
     },
     {
-      "name": "Cancel order",
+      "name": "02 - Create a MockCourier order",
       "request": {
         "method": "POST",
-        "url": "{{baseUrl}}/orders/ORDER-POSTMAN-1001/cancel"
-      }
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-request-id",
+            "value": "{{requestId}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"orderId\": \"{{orderId}}\",\n  \"courierPartner\": \"mock\",\n  \"serviceType\": \"FORWARD\",\n  \"paymentMode\": \"PREPAID\",\n  \"shipper\": {\n    \"name\": \"Acme Warehouse\",\n    \"phone\": \"+919900000001\",\n    \"addressLine1\": \"1 Market Street\",\n    \"city\": \"Bengaluru\",\n    \"state\": \"Karnataka\",\n    \"postalCode\": \"560001\",\n    \"country\": \"IN\"\n  },\n  \"consignee\": {\n    \"name\": \"Ada Lovelace\",\n    \"phone\": \"+919900000002\",\n    \"addressLine1\": \"42 Computing Lane\",\n    \"city\": \"Mumbai\",\n    \"state\": \"Maharashtra\",\n    \"postalCode\": \"400001\",\n    \"country\": \"IN\"\n  },\n  \"parcel\": {\n    \"weightGrams\": 750,\n    \"lengthCm\": 20,\n    \"widthCm\": 15,\n    \"heightCm\": 10,\n    \"description\": \"Books\"\n  },\n  \"invoice\": {\n    \"number\": \"INV-POSTMAN-1001\",\n    \"amount\": 1299,\n    \"currency\": \"INR\"\n  }\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": "{{baseUrl}}/orders",
+        "description": "Admits a normalized order. The local reference dispatcher returns 202 with a PENDING order; it does not call a courier during the HTTP request."
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('create returns 202', () => pm.response.to.have.status(202));",
+              "pm.test('create is a new admission', () => pm.expect(pm.response.json().disposition).to.eql('created'));",
+              "pm.test('order starts pending', () => pm.expect(pm.response.json().order.status).to.eql('PENDING'));",
+              "pm.test('request ID is echoed', () => pm.expect(pm.response.headers.get('x-request-id')).to.eql(pm.variables.get('requestId')));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "03 - Replay the identical order",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"orderId\": \"{{orderId}}\",\n  \"courierPartner\": \"mock\",\n  \"serviceType\": \"FORWARD\",\n  \"paymentMode\": \"PREPAID\",\n  \"shipper\": { \"name\": \"Acme Warehouse\", \"phone\": \"+919900000001\", \"addressLine1\": \"1 Market Street\", \"city\": \"Bengaluru\", \"state\": \"Karnataka\", \"postalCode\": \"560001\", \"country\": \"IN\" },\n  \"consignee\": { \"name\": \"Ada Lovelace\", \"phone\": \"+919900000002\", \"addressLine1\": \"42 Computing Lane\", \"city\": \"Mumbai\", \"state\": \"Maharashtra\", \"postalCode\": \"400001\", \"country\": \"IN\" },\n  \"parcel\": { \"weightGrams\": 750, \"lengthCm\": 20, \"widthCm\": 15, \"heightCm\": 10, \"description\": \"Books\" },\n  \"invoice\": { \"number\": \"INV-POSTMAN-1001\", \"amount\": 1299, \"currency\": \"INR\" }\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": "{{baseUrl}}/orders",
+        "description": "Re-submits exactly the same logical request. Idempotent admission returns the existing order rather than scheduling duplicate work."
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('replay returns 202', () => pm.response.to.have.status(202));",
+              "pm.test('response is marked replayed', () => pm.expect(pm.response.json().disposition).to.eql('replayed'));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "04 - Track the admitted order",
+      "request": {
+        "method": "GET",
+        "url": "{{baseUrl}}/orders/{{orderId}}/track",
+        "description": "Returns the normalized tracking view. The expected state is PENDING until a dispatcher invokes provider dispatch."
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('tracking returns 200', () => pm.response.to.have.status(200));",
+              "pm.test('tracking preserves internal order ID', () => pm.expect(pm.response.json().orderId).to.eql(pm.variables.get('orderId')));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "05 - Cancel the order",
+      "request": {
+        "method": "POST",
+        "url": "{{baseUrl}}/orders/{{orderId}}/cancel",
+        "description": "Cancels a pending order. Repeating cancellation is safe and returns the existing cancelled state."
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('cancellation returns 200', () => pm.response.to.have.status(200));",
+              "pm.test('order is cancelled', () => pm.expect(pm.response.json().status).to.eql('CANCELLED'));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "06 - Reject a changed payload with the same order ID",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"orderId\": \"{{orderId}}\",\n  \"courierPartner\": \"mock\",\n  \"serviceType\": \"FORWARD\",\n  \"paymentMode\": \"PREPAID\",\n  \"shipper\": { \"name\": \"Acme Warehouse\", \"phone\": \"+919900000001\", \"addressLine1\": \"1 Market Street\", \"city\": \"Bengaluru\", \"state\": \"Karnataka\", \"postalCode\": \"560001\", \"country\": \"IN\" },\n  \"consignee\": { \"name\": \"Ada Lovelace\", \"phone\": \"+919900000002\", \"addressLine1\": \"42 Computing Lane\", \"city\": \"Mumbai\", \"state\": \"Maharashtra\", \"postalCode\": \"400001\", \"country\": \"IN\" },\n  \"parcel\": { \"weightGrams\": 900, \"lengthCm\": 20, \"widthCm\": 15, \"heightCm\": 10, \"description\": \"Books\" },\n  \"invoice\": { \"number\": \"INV-POSTMAN-1001\", \"amount\": 1299, \"currency\": \"INR\" }\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": "{{baseUrl}}/orders",
+        "description": "Changes parcel weight while retaining the order ID. The API fails closed instead of accidentally creating a duplicate shipment."
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('changed payload returns 409', () => pm.response.to.have.status(409));",
+              "pm.test('error is normalized', () => pm.expect(pm.response.json().error.code).to.eql('IDEMPOTENCY_CONFLICT'));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "07 - Reject an unknown request field",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"orderId\": \"ORDER-POSTMAN-INVALID-1001\",\n  \"courierPartner\": \"mock\",\n  \"serviceType\": \"FORWARD\",\n  \"paymentMode\": \"PREPAID\",\n  \"shipper\": { \"name\": \"Acme Warehouse\", \"phone\": \"+919900000001\", \"addressLine1\": \"1 Market Street\", \"city\": \"Bengaluru\", \"state\": \"Karnataka\", \"postalCode\": \"560001\", \"country\": \"IN\" },\n  \"consignee\": { \"name\": \"Ada Lovelace\", \"phone\": \"+919900000002\", \"addressLine1\": \"42 Computing Lane\", \"city\": \"Mumbai\", \"state\": \"Maharashtra\", \"postalCode\": \"400001\", \"country\": \"IN\" },\n  \"parcel\": { \"weightGrams\": 750, \"lengthCm\": 20, \"widthCm\": 15, \"heightCm\": 10 },\n  \"invoice\": { \"number\": \"INV-POSTMAN-INVALID-1001\", \"amount\": 1299, \"currency\": \"INR\" },\n  \"unexpected\": true\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": "{{baseUrl}}/orders",
+        "description": "Shows strict request whitelisting. Ambiguous fields are rejected instead of silently discarded."
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('validation returns 400', () => pm.response.to.have.status(400));",
+              "pm.test('validation error has a request ID', () => pm.expect(pm.response.json().error.requestId).to.be.a('string'));"
+            ]
+          }
+        }
+      ]
     }
   ]
 }
