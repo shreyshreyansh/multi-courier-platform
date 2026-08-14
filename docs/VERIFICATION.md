@@ -4,24 +4,25 @@
 
 Verified on 2026-08-14. This result proves the checked-in implementation, documentation, and container path. It includes the 1–100 batch API and in-process asynchronous dispatch. It does **not** imply durable persistence, append-only tracking history, a worker/outbox, retry/reconciliation, or restart-safe batch state. See [ASSIGNMENT-COVERAGE.md](ASSIGNMENT-COVERAGE.md).
 
-| Check                         | Result | Evidence                                                                                          |
-| ----------------------------- | ------ | ------------------------------------------------------------------------------------------------- |
-| Formatting                    | Passed | Prettier checked the complete repository.                                                         |
-| Lint                          | Passed | ESLint completed with zero warnings.                                                              |
-| TypeScript build              | Passed | The NestJS application compiled successfully.                                                     |
-| Automated tests               | Passed | 8 test files, 21 tests.                                                                           |
-| Coverage                      | Passed | 88.49% statements/lines, 74.17% branches, 90.69% functions.                                       |
-| Container build               | Passed | Docker image built as **multi-courier-platform:review**.                                          |
-| Container smoke               | Passed | Image started with production environment variables and **GET /api/v1/health/live** returned 200. |
-| Postman collection validation | Passed | Collection JSON parsed successfully after its reviewer-journey assertions were added.             |
+| Check                         | Result | Evidence                                                                                           |
+| ----------------------------- | ------ | -------------------------------------------------------------------------------------------------- |
+| Formatting                    | Passed | Prettier checked the complete repository.                                                          |
+| Lint                          | Passed | ESLint completed with zero warnings.                                                               |
+| TypeScript build              | Passed | The NestJS application compiled successfully.                                                      |
+| Automated tests               | Passed | 8 test files, 21 tests.                                                                            |
+| Coverage                      | Passed | 88.49% statements/lines, 74.17% branches, 90.69% functions.                                        |
+| Container build               | Passed | Docker image built as **multi-courier-platform:review-caeb0a4**.                                   |
+| Container smoke               | Passed | Production container returned 200 for health and completed the checked-in two-order batch example. |
+| Postman collection validation | Passed | Collection JSON parsed successfully after its reviewer-journey assertions were added.              |
 
 ## Commands used
 
 ```bash
 npm run verify
-docker build --tag multi-courier-platform:review .
-docker run --rm --name multi-courier-platform-smoke --publish 3001:3000 --env NODE_ENV=production --env PORT=3000 multi-courier-platform:review
+docker build --tag multi-courier-platform:review-caeb0a4 .
+docker run --rm --name multi-courier-platform-smoke --publish 3001:3000 --env NODE_ENV=production --env PORT=3000 multi-courier-platform:review-caeb0a4
 curl --fail --silent --show-error http://localhost:3001/api/v1/health/live
+curl --fail --silent --show-error --request POST http://localhost:3001/api/v1/orders/bulk --header 'Content-Type: application/json' --data @examples/bulk-orders.json
 ```
 
 The health smoke response had the expected shape:
@@ -33,6 +34,8 @@ The health smoke response had the expected shape:
   "timestamp": "2026-08-14T05:17:22.709Z"
 }
 ```
+
+The container also accepted the checked-in bulk example and its subsequent batch lookup reported `acceptedCount: 2`, `completedCount: 2`, and two `CREATED` MockCourier items.
 
 ## What the automated suite proves
 
