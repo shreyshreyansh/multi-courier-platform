@@ -2,8 +2,10 @@ import { Module } from "@nestjs/common";
 import { ConfigModule } from "@nestjs/config";
 import { LoggerModule } from "nestjs-pino";
 
+import { AllExceptionsFilter } from "./common/all-exceptions.filter";
 import { validateEnvironment } from "./config/environment";
 import { HealthModule } from "./health/health.module";
+import { OrdersModule } from "./orders/orders.module";
 
 @Module({
   imports: [
@@ -26,6 +28,8 @@ import { HealthModule } from "./health/health.module";
       },
     }),
     HealthModule,
+    OrdersModule,
   ],
+  providers: [AllExceptionsFilter],
 })
 export class AppModule {}

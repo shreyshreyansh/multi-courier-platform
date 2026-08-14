@@ -35,6 +35,7 @@ function canonicalize(value: unknown): CanonicalValue {
   if (isRecord(value)) {
     return Object.fromEntries(
       Object.entries(value)
+        .filter(([, nestedValue]) => nestedValue !== undefined)
         .sort(([left], [right]) => left.localeCompare(right))
         .map(([key, nestedValue]) => [key, canonicalize(nestedValue)]),
     );

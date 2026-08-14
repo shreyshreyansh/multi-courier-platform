@@ -8,13 +8,11 @@ export interface LiveHealth {
 
 @Injectable()
 export class HealthService {
-  public constructor(private readonly now: () => Date = () => new Date()) {}
-
-  public live(): LiveHealth {
+  public live(now: Date = new Date()): LiveHealth {
     return {
       status: "ok",
       service: "multi-courier-platform",
-      timestamp: this.now().toISOString(),
+      timestamp: now.toISOString(),
     };
   }
 }
