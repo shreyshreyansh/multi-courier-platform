@@ -1,0 +1,39 @@
+{
+  "info": {
+    "name": "Multi Courier Platform",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [{ "key": "baseUrl", "value": "http://localhost:3000/api/v1" }],
+  "item": [
+    {
+      "name": "Health",
+      "request": { "method": "GET", "url": "{{baseUrl}}/health/live" }
+    },
+    {
+      "name": "Create mock order",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"orderId\": \"ORDER-POSTMAN-1001\",\n  \"courierPartner\": \"mock\",\n  \"serviceType\": \"FORWARD\",\n  \"paymentMode\": \"PREPAID\",\n  \"shipper\": { \"name\": \"Acme Warehouse\", \"phone\": \"+919900000001\", \"addressLine1\": \"1 Market Street\", \"city\": \"Bengaluru\", \"state\": \"Karnataka\", \"postalCode\": \"560001\", \"country\": \"IN\" },\n  \"consignee\": { \"name\": \"Ada Lovelace\", \"phone\": \"+919900000002\", \"addressLine1\": \"42 Computing Lane\", \"city\": \"Mumbai\", \"state\": \"Maharashtra\", \"postalCode\": \"400001\", \"country\": \"IN\" },\n  \"parcel\": { \"weightGrams\": 750, \"lengthCm\": 20, \"widthCm\": 15, \"heightCm\": 10 },\n  \"invoice\": { \"number\": \"INV-1001\", \"amount\": 1299, \"currency\": \"INR\" }\n}"
+        },
+        "url": "{{baseUrl}}/orders"
+      }
+    },
+    {
+      "name": "Track order",
+      "request": {
+        "method": "GET",
+        "url": "{{baseUrl}}/orders/ORDER-POSTMAN-1001/track"
+      }
+    },
+    {
+      "name": "Cancel order",
+      "request": {
+        "method": "POST",
+        "url": "{{baseUrl}}/orders/ORDER-POSTMAN-1001/cancel"
+      }
+    }
+  ]
+}
