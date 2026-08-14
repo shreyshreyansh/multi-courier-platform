@@ -1,11 +1,14 @@
 import { Module } from "@nestjs/common";
 
+import { CourierAdapterRegistry } from "../couriers/courier-adapter.registry";
+import { MockCourierAdapter } from "../couriers/mock-courier.adapter";
 import { OrdersController } from "./api/orders.controller";
 import {
   OrderService,
   type OrderDispatcher,
 } from "./application/order.service";
 import type { OrderRepository } from "./domain/order.repository";
+import { OrderFulfillmentService } from "./fulfillment/order-fulfillment.service";
 import { InMemoryOrderRepository } from "./infrastructure/in-memory-order.repository";
 
 export const ORDER_REPOSITORY = Symbol("ORDER_REPOSITORY");
@@ -27,6 +30,18 @@ class PendingOrderDispatcher implements OrderDispatcher {
     {
       provide: ORDER_DISPATCHER,
       useFactory: () => new PendingOrderDispatcher(),
+    },
+    {
+      provide: CourierAdapterRegistry,
+      useFactory: () => new CourierAdapterRegistry([new MockCourierAdapter()]),
+    },
+    {
+      provide: OrderFulfillmentService,
+      useFactory: (
+        orderRepository: OrderRepository,
+        adapters: CourierAdapterRegistry,
+      ) => new OrderFulfillmentService(orderRepository, adapters),
+      inject: [ORDER_REPOSITORY, CourierAdapterRegistry],
     },
     {
       provide: OrderService,

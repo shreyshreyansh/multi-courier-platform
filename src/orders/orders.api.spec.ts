@@ -115,4 +115,27 @@ describe("Orders HTTP API", () => {
     expect(body.error.code).toBe("IDEMPOTENCY_CONFLICT");
     expect(body.error.requestId).toEqual(expect.any(String));
   });
+
+  it("retrieves a normalized pending state and cancels the accepted order", async () => {
+    await request(httpServer)
+      .post("/api/v1/orders")
+      .send(validOrder)
+      .expect(202);
+
+    const tracked = await request(httpServer)
+      .get(`/api/v1/orders/${validOrder.orderId}/track`)
+      .expect(200);
+    const cancelled = await request(httpServer)
+      .post(`/api/v1/orders/${validOrder.orderId}/cancel`)
+      .expect(200);
+
+    expect(tracked.body as unknown).toMatchObject({
+      orderId: validOrder.orderId,
+      status: "PENDING",
+    });
+    expect(cancelled.body as unknown).toMatchObject({
+      orderId: validOrder.orderId,
+      status: "CANCELLED",
+    });
+  });
 });
